@@ -1,0 +1,40 @@
+# Push a tag like v1.2.0 to build NXTerm.exe and publish a GitHub Release.
+# Installed copies of NXTerm find the new release through Help > Check for updates.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Test
+        run: dotnet run --project NXTerm.Tests -c Release
+
+      - name: Publish NXTerm.exe
+        shell: pwsh
+        run: |
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          dotnet publish NXTerm/NXTerm.csproj -c Release -r win-x64 `
+            -p:SelfContained=false -p:PublishSingleFile=true -p:DebugType=none `
+            -p:Version=$version -p:GitHubRepo=${{ github.repository }} -o publish
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            publish/NXTerm.exe
+            LICENSE
+            THIRD-PARTY-NOTICES.md
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="NXTerm.Tests/NXTerm.Tests.csproj" />
+  <Project Path="NXTerm/NXTerm.csproj" />
+</Solution>

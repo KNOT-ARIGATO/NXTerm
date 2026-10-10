@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationIcon>Resources\NXTerm.ico</ApplicationIcon>
+
+    <Product>NXTerm</Product>
+    <Description>Terminal emulator for Windows: Serial, SSH, Telnet</Description>
+    <Copyright>Copyright (c) 2026 NXTerm contributors. MIT License.</Copyright>
+    <!-- The release workflow sets these from the git tag and the repository name. -->
+    <Version>1.1.0</Version>
+    <GitHubRepo></GitHubRepo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- "owner/repo" used by Help > Check for updates. -->
+    <AssemblyMetadata Include="GitHubRepo" Value="$(GitHubRepo)" />
+    <EmbeddedResource Include="Resources\NXTerm.ico" LogicalName="NXTerm.ico" />
+    <!-- Shown by Help > Open-source licenses, so the notices travel inside NXTerm.exe. -->
+    <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE.txt" Link="Resources\LICENSE.txt" />
+    <EmbeddedResource Include="..\THIRD-PARTY-NOTICES.md" LogicalName="THIRD-PARTY-NOTICES.md" Link="Resources\THIRD-PARTY-NOTICES.md" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+    <PackageReference Include="System.Management" Version="10.0.12" />
+  </ItemGroup>
+
+</Project>
