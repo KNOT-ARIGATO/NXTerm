@@ -13,7 +13,7 @@
     <Copyright>Copyright (c) 2026 NXTerm contributors. MIT License.</Copyright>
     <!-- The release workflow sets these from the git tag and the repository name. -->
     <Version>1.1.0</Version>
-    <GitHubRepo></GitHubRepo>
+    <GitHubRepo>KNOT-ARIGATO/NXTerm</GitHubRepo>
   </PropertyGroup>
 
   <ItemGroup>
