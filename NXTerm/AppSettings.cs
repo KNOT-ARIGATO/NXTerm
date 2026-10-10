@@ -43,7 +43,13 @@ public sealed class AppSettings
     public int[]? QuickWindowBounds;  // x, y, width, height of the floating window
     public bool QuickWindowOnTop;
     public int QuickGroup;
-    public bool ShowToolbar = true;
+
+    // Extra tools: ticked in Setup > Extra tools to show their button on the menu bar.
+    public bool ShowRtspTool;
+    /// <summary>Recent RTSP addresses, each encrypted with DPAPI because they may contain a camera password.</summary>
+    public List<string> RtspHistory = [];
+    public int[]? RtspWindowBounds;
+    public bool RtspOnTop;
 
     public bool CheckForUpdates = true;
     public DateTime LastUpdateCheck;

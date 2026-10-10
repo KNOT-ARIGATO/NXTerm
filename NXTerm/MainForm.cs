@@ -38,10 +38,8 @@ public sealed class MainForm : Form, IMacroHost
     QuickCommandsForm? _quickForm;
     ToolStripMenuItem _quickMenu = null!;
 
-    readonly ToolStrip _toolbar = new() { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(4, 1, 4, 1) };
-    ToolStripDropDownButton _tbSessions = null!;
-    ToolStripButton _tbQuick = null!, _tbLog = null!;
-    ToolStripMenuItem _miSessions = null!, _miShowToolbar = null!, _miAutoUpdate = null!;
+    ToolStripMenuItem _miSessions = null!, _sessionsMenu = null!, _miAutoUpdate = null!;
+    ToolStripMenuItem _rtspButton = null!, _miRtspTool = null!;
     readonly ToolStripStatusLabel _stUpdate = new() { IsLink = true, Visible = false };
 
     SavedSession? _connSession;  // saved session of the current connection, if any
@@ -77,7 +75,6 @@ public sealed class MainForm : Form, IMacroHost
         _quickSplitter.SplitterMoved += (_, _) => _settings.QuickDockHeight = _quickPanel.Height;
 
         BuildMenu();
-        BuildToolbar();
         _status.Items.AddRange([_stConn, _stUpdate, _stMacro, _stLog, _stSize]);
         _status.SizingGrip = true;
         _stUpdate.Click += (_, _) =>
@@ -85,7 +82,6 @@ public sealed class MainForm : Form, IMacroHost
             if (_availableUpdate != null) ShowUpdateDialog(_availableUpdate);
         };
         Controls.Add(_view);
-        Controls.Add(_toolbar);
         Controls.Add(_menu);
         Controls.Add(_status);
         MainMenuStrip = _menu;
@@ -188,18 +184,20 @@ public sealed class MainForm : Form, IMacroHost
             Item("Clear &buffer", _view.ClearBuffer),
         ]);
 
-        _miShowToolbar = Item("Show tool&bar", () =>
+        _miRtspTool = Item("&RTSP viewer (camera stream)", () =>
         {
-            _settings.ShowToolbar = !_settings.ShowToolbar;
-            ApplyToolbarVisibility(keepTerminalSize: true);
+            _settings.ShowRtspTool = !_settings.ShowRtspTool;
+            ApplyExtraTools();
             SaveSettings();
         });
+        var tools = new ToolStripMenuItem("E&xtra tools") { ToolTipText = "Tick a tool to show its button on the menu bar" };
+        tools.DropDownItems.Add(_miRtspTool);
         var setup = new ToolStripMenuItem("&Setup");
         setup.DropDownItems.AddRange(
         [
             Item("&Terminal...", ShowTerminalSetup),
             Item("&Font...", ShowFontDialog),
-            _miShowToolbar,
+            tools,
             new ToolStripSeparator(),
             Item("&Save setup as...", SaveSetupAs),
             Item("&Restore setup...", RestoreSetup),
@@ -237,52 +235,32 @@ public sealed class MainForm : Form, IMacroHost
         _quickMenu.DropDownOpening += (_, _) => BuildQuickMenu();
         BuildQuickMenu();
 
-        _menu.Items.AddRange([file, edit, setup, control, _quickMenu, help]);
+        _sessionsMenu = new ToolStripMenuItem("Sessi&ons");
+        _sessionsMenu.DropDownOpening += (_, _) => FillSessionItems(_sessionsMenu.DropDownItems);
+        FillSessionItems(_sessionsMenu.DropDownItems);
+
+        // Buttons of the extra tools sit at the right end of the menu bar, only when ticked in Setup > Extra tools.
+        _rtspButton = new ToolStripMenuItem("RTSP", null, (_, _) => OpenRtspViewer())
+        {
+            Alignment = ToolStripItemAlignment.Right,
+            ToolTipText = "Open an RTSP camera viewer window",
+            Visible = false,
+        };
+        _menu.ShowItemToolTips = true;
+
+        _menu.Items.AddRange([file, edit, _sessionsMenu, setup, control, _quickMenu, help, _rtspButton]);
     }
 
-    void BuildToolbar()
+    void ApplyExtraTools()
     {
-        ToolStripButton Button(string text, string tip, Action onClick)
-        {
-            var b = new ToolStripButton(text) { ToolTipText = tip, Margin = new Padding(0, 1, 2, 2) };
-            b.Click += (_, _) => onClick();
-            return b;
-        }
-        _tbSessions = new ToolStripDropDownButton("Sessions") { ToolTipText = "Connect to a saved session" };
-        _tbSessions.DropDownOpening += (_, _) => FillSessionItems(_tbSessions.DropDownItems);
-        FillSessionItems(_tbSessions.DropDownItems);
-        var disconnect = Button("Disconnect", "Close the connection (Alt+I)", () => Disconnect());
-        var save = Button("Save session", "Save this connection so you can reconnect with one click", SaveCurrentAsSession);
-        _needConnection.AddRange([disconnect, save]);
-        _tbQuick = Button("Quick commands", "Show or hide the quick command buttons (Alt+K)", ToggleQuick);
-        _tbLog = Button("Log", "Start or stop saving the session to a file", () =>
-        {
-            if (_logger != null) StopLog();
-            else StartLog();
-        });
-        _toolbar.Items.AddRange(
-        [
-            Button("New connection", "Open a new connection (Alt+N)", ShowConnectDialog),
-            _tbSessions,
-            save,
-            disconnect,
-            new ToolStripSeparator(),
-            _tbQuick,
-            _tbLog,
-            Button("Macro", "Run a macro file (Alt+M)", () => RunMacro()),
-            new ToolStripSeparator(),
-            Button("Settings", "Terminal settings", ShowTerminalSetup),
-        ]);
+        _rtspButton.Visible = _settings.ShowRtspTool;
+        _miRtspTool.Checked = _settings.ShowRtspTool;
     }
 
-    void ApplyToolbarVisibility(bool keepTerminalSize)
+    void OpenRtspViewer()
     {
-        if (_toolbar.Visible == _settings.ShowToolbar && IsHandleCreated) return;
-        int before = _settings.ShowToolbar ? 0 : _toolbar.Height;
-        int after = _settings.ShowToolbar ? _toolbar.Height : 0;
-        _toolbar.Visible = _settings.ShowToolbar;
-        _miShowToolbar.Checked = _settings.ShowToolbar;
-        if (keepTerminalSize && WindowState == FormWindowState.Normal && IsHandleCreated) Height += after - before;
+        var viewer = new Rtsp.RtspViewerForm(_settings, SaveSettings) { Icon = Program.AppIcon };
+        viewer.Show();
     }
 
     // ================================================================== saved sessions
@@ -334,7 +312,7 @@ public sealed class MainForm : Form, IMacroHost
         _settings.LastSession = s.Name;
         SaveSettings();
         UpdateConnState();
-        _stConn.Text = $"Saved session \"{name}\". Reconnect any time from the Sessions button.";
+        _stConn.Text = $"Saved session \"{name}\". Reconnect any time from the Sessions menu.";
     }
 
     void BuildQuickMenu()
@@ -387,13 +365,12 @@ public sealed class MainForm : Form, IMacroHost
             Controls.Add(_quickSplitter);
             Controls.Add(_quickPanel);
             // WinForms docks the highest child index first (outermost): status bar and menu at the edges,
-            // then toolbar, quick panel and splitter, and the terminal fills what is left.
+            // then quick panel and splitter, and the terminal fills what is left.
             Controls.SetChildIndex(_view, 0);
             Controls.SetChildIndex(_quickSplitter, 1);
             Controls.SetChildIndex(_quickPanel, 2);
-            Controls.SetChildIndex(_toolbar, 3);
-            Controls.SetChildIndex(_menu, 4);
-            Controls.SetChildIndex(_status, 5);
+            Controls.SetChildIndex(_menu, 3);
+            Controls.SetChildIndex(_status, 4);
             if (keepSize)
             {
                 var area = Screen.FromControl(this).WorkingArea;
@@ -419,7 +396,6 @@ public sealed class MainForm : Form, IMacroHost
         _quickPanel.DockButton.Text = mode == QuickMode.Docked ? "Separate window" : "Dock in main window";
         _quickPanel.DockButton.ToolTipText = mode == QuickMode.Docked ? "Move the buttons to their own window" : "Put the buttons under the terminal";
         _quickPanel.OnTopButton.Visible = mode == QuickMode.Floating;
-        _tbQuick.Checked = mode != QuickMode.Hidden;
         if (mode != QuickMode.Floating) _view.Focus();
     }
 
@@ -527,7 +503,7 @@ public sealed class MainForm : Form, IMacroHost
         _view.Term.LfImpliesCr = s.ReceiveNewline == ReceiveNewline.LfAsCrLf;
         _view.Term.CrImpliesLf = s.ReceiveNewline == ReceiveNewline.CrAsCrLf;
         SetEncoding(s.EncodingName);
-        ApplyToolbarVisibility(keepTerminalSize: false);
+        ApplyExtraTools();
         if (resizeWindow) ResizeToTerminal(s.Cols, s.Rows);
         _view.Invalidate();
     }
@@ -543,7 +519,7 @@ public sealed class MainForm : Form, IMacroHost
     {
         if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
         var sz = _view.ClientSizeFor(cols, rows);
-        int extra = _menu.Height + _status.Height + (_settings.ShowToolbar ? _toolbar.Height : 0) +
+        int extra = _menu.Height + _status.Height +
                     (Controls.Contains(_quickPanel) ? _quickPanel.Height + _quickSplitter.Height : 0);
         ClientSize = new Size(sz.Width, sz.Height + extra);
     }
@@ -802,12 +778,11 @@ public sealed class MainForm : Form, IMacroHost
         bool on = _conn != null;
         _stConn.Text = on
             ? $"Connected: {(_connSession != null ? _connSession.Name + "  (" + _connParams + ")" : _connParams)}"
-            : "Not connected  (Alt+N: new connection, or pick one of your Sessions)";
+            : "Not connected  (Alt+N: new connection, or pick one from the Sessions menu)";
         foreach (var i in _needConnection) i.Enabled = on;
         _miScp.Enabled = _conn is SshConnection;
         _miStopLog.Enabled = _logger != null;
         _miStopMacro.Enabled = _macro != null;
-        _tbLog.Checked = _logger != null;
         UpdateTitle();
     }
 
@@ -1184,7 +1159,6 @@ public sealed class MainForm : Form, IMacroHost
         base.OnShown(e);
         _view.Focus();
         if (_settings.QuickMode != QuickMode.Hidden) SetQuickMode(_settings.QuickMode);
-        else _tbQuick.Checked = false;
         _ = CheckForUpdatesAsync(manual: false);
 
         var sessionArg = _args.FirstOrDefault(a => a.StartsWith("/S=", StringComparison.OrdinalIgnoreCase))?[3..].Trim('"');

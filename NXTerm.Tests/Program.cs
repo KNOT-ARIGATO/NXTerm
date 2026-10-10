@@ -6,9 +6,19 @@ using NXTerm.Emulation;
 using NXTerm.Logging;
 using NXTerm.Macro;
 using NXTerm.QuickCommands;
+using NXTerm.Rtsp;
 using NXTerm.Transfer;
 
 // Self-contained test runner: dotnet run --project NXTerm.Tests
+// Pretend camera for trying the RTSP viewer by hand: dotnet run --project NXTerm.Tests -- --rtsp-server [port] [user password]
+if (args is ["--rtsp-server", ..])
+{
+    int port = args.Length > 1 ? int.Parse(args[1]) : 8554;
+    using var camera = new TestRtspServer(port, args.Length > 3 ? args[2] : null, args.Length > 3 ? args[3] : null, widthMb: 40, heightMb: 30, fps: 15);
+    Console.WriteLine($"Test camera running at rtsp://127.0.0.1:{camera.Port}/live  (640x480, 15 fps). Press Ctrl+C to stop.");
+    Thread.Sleep(Timeout.Infinite);
+}
+
 var tests = new List<(string Name, Func<Task> Body)>();
 void Test(string name, Action body) => tests.Add((name, () => { body(); return Task.CompletedTask; }));
 void TestAsync(string name, Func<Task> body) => tests.Add((name, body));
@@ -434,6 +444,21 @@ Test("update: GitHub release JSON is parsed", () =>
     Eq(null, NXTerm.Updates.Updater.ParseRelease("""{"tag_name":"latest-build"}"""));
 });
 
+Test("update: each kind of download only updates to its own kind", () =>
+{
+    var json = """
+        {"tag_name":"v2.0.0","assets":[
+          {"name":"NXTerm-standalone.exe","browser_download_url":"https://x/big","size":55000000},
+          {"name":"NXTerm.exe","browser_download_url":"https://x/small","size":7000000}]}
+        """;
+    Eq("https://x/small", NXTerm.Updates.Updater.ParseRelease(json, standalone: false)!.AssetUrl);
+    Eq("https://x/big", NXTerm.Updates.Updater.ParseRelease(json, standalone: true)!.AssetUrl);
+    // a release without the standalone file must not offer the small one to a standalone install
+    var smallOnly = """{"tag_name":"v2.0.0","assets":[{"name":"NXTerm.exe","browser_download_url":"https://x/small","size":1}]}""";
+    Eq(null, NXTerm.Updates.Updater.ParseRelease(smallOnly, standalone: true)!.AssetUrl);
+    Eq(false, NXTerm.Updates.Updater.IsStandalone);
+});
+
 Test("update: current version and repo are readable", () =>
 {
     Eq(true, NXTerm.Updates.Updater.CurrentVersionText.Split('.').Length == 3);
@@ -448,6 +473,119 @@ Test("update: version tags", () =>
         Eq(expect, v.ToString(3));
     }
     Eq(false, NXTerm.Updates.Updater.TryParseVersion("nightly", out _));
+});
+
+// ---------------------------------------------------------------- RTSP viewer
+
+Test("rtsp: RTP packets are rebuilt into pictures", () =>
+{
+    static byte[] Rtp(uint ts, bool marker, params byte[] payload)
+    {
+        var p = new byte[12 + payload.Length];
+        p[0] = 0x80;
+        p[1] = (byte)(96 | (marker ? 0x80 : 0));
+        for (int i = 0; i < 4; i++) p[4 + i] = (byte)(ts >> (24 - 8 * i));
+        payload.CopyTo(p, 12);
+        return p;
+    }
+    var frames = new List<(string Hex, uint Ts, bool Key)>();
+    var d = new H264Depacketizer();
+    d.FrameReady += (f, ts, key) => frames.Add((Convert.ToHexString(f), ts, key));
+
+    d.OnRtp(Rtp(100, true, 0x41, 1, 2));                                   // a picture before the first key frame is dropped
+    Eq(0, frames.Count);
+    d.OnRtp(Rtp(200, false, 24, 0, 2, 0x67, 0xAA, 0, 2, 0x68, 0xBB));      // STAP-A: SPS + PPS
+    d.OnRtp(Rtp(200, false, 0x7C, 0x85, 1, 2));                            // FU-A start of the key frame
+    d.OnRtp(Rtp(200, true, 0x7C, 0x45, 3, 4));                             // FU-A end
+    Eq(1, frames.Count);
+    Eq(("0000000167AA0000000168BB000000016501020304", 200u, true), frames[0]);
+    d.OnRtp(Rtp(300, true, 0x41, 9));                                      // single NAL, not a key frame
+    Eq(("000000014109", 300u, false), frames[1]);
+
+    // parameter sets from the SDP are added when the camera does not repeat them
+    var d2 = new H264Depacketizer();
+    d2.FrameReady += (f, ts, key) => frames.Add((Convert.ToHexString(f), ts, key));
+    d2.SetParameterSets([0x67, 1], [0x68, 2]);
+    d2.OnRtp(Rtp(1, true, 0x65, 7));
+    Eq("0000000167010000000168020000000165" + "07", frames[2].Hex);
+});
+
+TestAsync("rtsp: client logs in (Digest) and receives the camera's pictures", async () =>
+{
+    using var camera = new TestRtspServer(user: "admin", password: "s3cret");
+    using var client = new RtspClient($"rtsp://admin:s3cret@127.0.0.1:{camera.Port}/live");
+    var frames = new List<byte[]>();
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+    bool playing = false;
+    client.FrameReceived += (f, _, _) =>
+    {
+        lock (frames)
+        {
+            frames.Add(f);
+            if (frames.Count >= 3) cts.Cancel();
+        }
+    };
+    await Task.Run(() =>
+    {
+        try { client.Run(cts.Token, () => playing = true); }
+        catch (OperationCanceledException) { }
+    });
+    Eq(true, playing);
+    Eq(true, frames.Count >= 3);
+    Eq(Convert.ToHexString(TestH264.AnnexBFrame(20, 15, 0)), Convert.ToHexString(frames[0]));
+    Eq(Convert.ToHexString(TestH264.AnnexBFrame(20, 15, 2)), Convert.ToHexString(frames[2]));
+    Eq(false, client.DisplayUrl.Contains("s3cret"));
+});
+
+Test("rtsp: wrong or missing password is reported, not retried", () =>
+{
+    using var camera = new TestRtspServer(user: "admin", password: "s3cret");
+    foreach (var (url, expect) in new[] { ($"rtsp://admin:wrong@127.0.0.1:{camera.Port}/live", "rejected"), ($"rtsp://127.0.0.1:{camera.Port}/live", "needs a user name") })
+    {
+        using var client = new RtspClient(url);
+        try
+        {
+            client.Run(new CancellationTokenSource(TimeSpan.FromSeconds(10)).Token);
+            throw new Exception("no error for " + expect);
+        }
+        catch (RtspException ex)
+        {
+            Eq(true, ex.Fatal);
+            Eq(true, ex.Message.Contains(expect));
+        }
+    }
+    try { _ = new RtspClient("http://example.com/x"); throw new Exception("accepted a non-rtsp address"); }
+    catch (RtspException ex) { Eq(true, ex.Fatal); }
+});
+
+Test("rtsp: Windows H.264 decoder shows the test picture", () =>
+{
+    H264Decoder decoder;
+    try { decoder = new H264Decoder(); }
+    catch (RtspException ex) when (ex.Fatal)
+    {
+        Console.WriteLine("      (skipped: " + ex.Message + ")");
+        return;
+    }
+    using (decoder)
+    {
+        byte[]? picture = null;
+        int w = 0, h = 0, fed = 0;
+        for (; fed < 60 && picture == null; fed++)
+            decoder.Decode(TestH264.AnnexBFrame(20, 15, fed), fed * 1_000_000L, (pw, ph) => new byte[pw * ph * 4],
+                (buf, pw, ph) => { picture ??= buf; w = pw; h = ph; });
+        if (picture == null) throw new Exception("the decoder produced no picture after 60 frames");
+        Eq((320, 240), (w, h));
+        (int R, int G, int B)[] bars = [(255, 255, 255), (255, 255, 0), (0, 255, 255), (0, 255, 0), (255, 0, 255), (255, 0, 0), (0, 0, 255), (0, 0, 0)];
+        for (int i = 0; i < 8; i++)
+        {
+            int o = (40 * w + 20 + 40 * i) * 4;
+            var got = (R: (int)picture[o + 2], G: (int)picture[o + 1], B: (int)picture[o]);
+            if (Math.Abs(got.R - bars[i].R) > 20 || Math.Abs(got.G - bars[i].G) > 20 || Math.Abs(got.B - bars[i].B) > 20)
+                throw new Exception($"bar {i}: expected about {bars[i]} but got {got}");
+        }
+        Console.WriteLine($"      (first picture after {fed} frame(s))");
+    }
 });
 
 // ---------------------------------------------------------------- run

@@ -32,6 +32,15 @@ public static class Updater
         : typeof(Updater).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
             .FirstOrDefault(a => a.Key == "GitHubRepo")?.Value is { Length: > 0 } repo ? repo : null;
 
+    public const string StandardAsset = "NXTerm.exe", StandaloneAsset = "NXTerm-standalone.exe";
+
+    /// <summary>
+    /// True for the "standalone" download that carries its own .NET runtime. It must only update to another
+    /// standalone build: the small NXTerm.exe would not start on a PC without the .NET Desktop Runtime.
+    /// </summary>
+    public static bool IsStandalone { get; } =
+        typeof(Updater).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>().FirstOrDefault(a => a.Key == "Flavor")?.Value == "standalone";
+
     static string ApiBase => Environment.GetEnvironmentVariable("NXTERM_UPDATE_API") is { Length: > 0 } api ? api.TrimEnd('/') : "https://api.github.com";
 
     public static string ExePath => Environment.ProcessPath ?? Application.ExecutablePath;
@@ -48,8 +57,10 @@ public static class Updater
         return ParseRelease(await resp.Content.ReadAsStringAsync(timeout.Token));
     }
 
-    public static ReleaseInfo? ParseRelease(string json)
+    /// <param name="standalone">Which download to look for; defaults to the kind of the running program.</param>
+    public static ReleaseInfo? ParseRelease(string json, bool? standalone = null)
     {
+        string wanted = standalone ?? IsStandalone ? StandaloneAsset : StandardAsset;
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         var tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
@@ -63,8 +74,7 @@ public static class Updater
             foreach (var a in assets.EnumerateArray())
             {
                 var name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                if (name.Equals("NXTerm.exe", StringComparison.OrdinalIgnoreCase)) { pick = a; break; }
-                if (pick == null && name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) pick = a;
+                if (name.Equals(wanted, StringComparison.OrdinalIgnoreCase)) { pick = a; break; }
             }
             if (pick is { } p)
             {
@@ -100,7 +110,7 @@ public static class Updater
     /// <summary>Downloads the release executable, verifies it and swaps it with the running NXTerm.exe.</summary>
     public static async Task InstallAsync(ReleaseInfo r, IProgress<long>? progress, CancellationToken ct)
     {
-        if (r.AssetUrl == null) throw new InvalidOperationException("This release has no NXTerm.exe to download.");
+        if (r.AssetUrl == null) throw new InvalidOperationException("This release has no matching program file to download.");
         var exe = ExePath;
         var tmp = exe + ".download";
         var old = exe + ".old";

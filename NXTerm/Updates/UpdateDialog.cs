@@ -39,7 +39,7 @@ public sealed class UpdateDialog : Form
             BackColor = SystemColors.Window,
         });
         if (release.AssetUrl == null)
-            _status.Text = "This release has no NXTerm.exe attached: use \"Release page\" to download it.";
+            _status.Text = "This release has no matching program file attached: use \"Release page\" to download it.";
         t.Controls.Add(_status);
         t.Controls.Add(_bar);
 
