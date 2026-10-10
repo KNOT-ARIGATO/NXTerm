@@ -55,7 +55,7 @@ public sealed class ConnectionParams
     };
 
     /// <summary>
-    /// Parses Tera Term style arguments:
+    /// Parses the command line arguments:
     /// host[:port] /ssh /telnet /raw /P=port /user=name /passwd=pw /keyfile=path /C=n /BAUD=n /M=macro /L=log
     /// </summary>
     public static ConnectionParams? Parse(IEnumerable<string> args, out string? macro, out string? log)

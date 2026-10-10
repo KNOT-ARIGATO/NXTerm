@@ -30,7 +30,7 @@ public sealed class MacroException(string message, int line = -1) : Exception(me
 }
 
 /// <summary>
-/// Interpreter for a practical subset of the Tera Term Language (TTL):
+/// Interpreter for the macro script language (.ttl files):
 /// variables, expressions, if/elseif/else/endif, while/endwhile, for/next, goto/call/return,
 /// send/sendln/wait/waitln/recvln/waitregex, pause/mpause, connect/disconnect, log*, dialogs and string helpers.
 /// </summary>

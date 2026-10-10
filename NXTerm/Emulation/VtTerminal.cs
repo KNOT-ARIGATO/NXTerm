@@ -31,7 +31,7 @@ public sealed class VtTerminal
     public bool MouseSgr;
     public CursorShape? CursorShapeOverride;
 
-    // Receive newline handling (Tera Term "Receive: CR / LF / AUTO")
+    // Receive newline handling (Setup > Terminal > Receive new-line)
     public bool LfImpliesCr;
     public bool CrImpliesLf;
 

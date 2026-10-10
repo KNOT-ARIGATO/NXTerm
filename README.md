@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/icon.png" width="96" alt="NXTerm icon"></p>
 
-# NXTerm: โปรแกรม Terminal แบบ Tera Term
+# NXTerm: โปรแกรม Terminal สำหรับ Windows
 
 โปรแกรม terminal สำหรับ Windows ใช้ต่อ **Serial (COM)**, **SSH**, **Telnet** ได้ในหน้าต่างเดียว
 มีปุ่มคำสั่งด่วน จำการเชื่อมต่อไว้กดเข้าได้ทันที และอัปเดตตัวเองจาก GitHub ได้
@@ -49,7 +49,7 @@
 | ภาษา | UTF-8, **ภาษาไทย (สระบน/ล่าง/วรรณยุกต์)**, TIS-620, ภาษาจีน/ญี่ปุ่น/เกาหลี |
 | Log | บันทึกเป็น text ล้วน ใส่ timestamp ทุกบรรทัด หรือเก็บเป็น binary |
 | โอนไฟล์ | ส่งไฟล์ text/binary, ลากไฟล์มาวางเพื่อส่ง, XMODEM, SSH SCP |
-| Macro | ภาษาแบบ Tera Term (TTL) ดู[รายการคำสั่ง](#macro-ttl) |
+| Macro | สคริปต์สั่งงานอัตโนมัติ (ไฟล์ `.ttl`) ดู[รายการคำสั่ง](#macro) |
 
 ## Session ที่บันทึกไว้
 
@@ -132,7 +132,7 @@
 | Shift+PageUp / PageDown, ล้อเมาส์ | เลื่อนดูข้อความเก่า |
 | ดับเบิลคลิก | เลือกทั้งคำ |
 
-## Command line (คล้าย Tera Term)
+## Command line
 
 ```
 NXTerm.exe "/S=Raspberry Pi"            (เปิด session ที่บันทึกไว้)
@@ -146,9 +146,9 @@ NXTerm.exe host /L=C:\logs\session.log  (เริ่มบันทึก log �
 
 ไฟล์ค่าตั้งอยู่ที่ `%APPDATA%\NXTerm\` (`NXTerm.json` สำหรับค่าตั้งและ session ส่วน `QuickCommands.json` สำหรับคำสั่งด่วน)
 
-## Macro (TTL)
+## Macro
 
-ไฟล์ `.ttl` เขียนแบบเดียวกับ Tera Term ตัวอย่างเช่น ล็อกอินบอร์ดผ่าน Serial:
+Macro คือสคริปต์ที่สั่งให้โปรแกรมพิมพ์คำสั่งและรอคำตอบแทนเรา บันทึกเป็นไฟล์ `.ttl` ตัวอย่างเช่น ล็อกอินบอร์ดผ่าน Serial:
 
 ```
 ; login.ttl
@@ -236,7 +236,7 @@ NXTerm/
   QuickCommands/                 แผงคำสั่งด่วน (อยู่ในหน้าต่างหลักหรือแยกหน้าต่าง)
   Updates/                       เช็กและติดตั้งอัปเดตจาก GitHub Releases
   Rtsp/                          เครื่องมือเสริม RTSP viewer (ตัวรับ RTSP, ตัวถอดรหัส H.264, หน้าต่างแสดงภาพ)
-  Macro/, Transfer/, Logging/    Macro TTL, XMODEM, ระบบบันทึก log
+  Macro/, Transfer/, Logging/    Macro, XMODEM, ระบบบันทึก log
   Dialogs/                       หน้าต่างตั้งค่าต่าง ๆ
   Resources/NXTerm.ico            ไอคอนโปรแกรม
 NXTerm.Tests/                     ชุดทดสอบ
@@ -248,9 +248,9 @@ tools/make-icon.ps1              สคริปต์สร้างไอค�
 
 - โค้ดของ NXTerm เผยแพร่ภายใต้ [MIT License](LICENSE) ใช้ แก้ไข และแจกต่อได้ฟรี รวมถึงใช้เชิงพาณิชย์
 - ไลบรารีที่รวมอยู่ใน `NXTerm.exe` (SSH.NET, BouncyCastle, ไลบรารี .NET ของ Microsoft) เป็น MIT ทั้งหมด ประกาศลิขสิทธิ์อยู่ใน [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) และเปิดอ่านในโปรแกรมได้ที่ **Help → Open-source licenses**
-- NXTerm เป็นโปรเจกต์อิสระ เขียนโค้ดขึ้นใหม่ทั้งหมด **ไม่เกี่ยวข้องกับ Tera Term หรือ Tera Term Project** การเอ่ยถึงชื่อ "Tera Term" มีไว้เพื่ออธิบายความเข้ากันได้เท่านั้น (เช่น ไวยากรณ์ macro แบบ TTL)
+- NXTerm เป็นโปรเจกต์อิสระ เขียนโค้ดขึ้นใหม่ทั้งหมด
 
-## สิ่งที่ยังไม่มี (เทียบกับ Tera Term)
+## สิ่งที่ยังไม่มี
 
 - ZMODEM, Kermit (มี XMODEM กับ SCP)
 - SSH port forwarding, SSH agent และ X11 forwarding

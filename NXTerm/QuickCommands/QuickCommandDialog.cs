@@ -22,7 +22,7 @@ public sealed class QuickCommandDialog : DialogBase
         _name = Row("Button label:", new TextBox { Text = c.Name });
         _group = Row("Group (tab):", Combo(groups, null));
         _group.SelectedIndex = Math.Clamp(groupIndex, 0, groups.Count - 1);
-        _kind = Row("Type:", Combo(["Text to send", "Macro (TTL)"], null));
+        _kind = Row("Type:", Combo(["Text to send", "Macro (script)"], null));
         _kind.SelectedIndex = (int)c.Kind;
         _text = Row("Command:", new TextBox
         {
@@ -39,7 +39,7 @@ public sealed class QuickCommandDialog : DialogBase
         Full(new Label
         {
             Text = "Text: one command per line, each line is sent in order.\r\n" +
-                   "Macro: TTL commands, e.g.  sendln 'ls'   wait '$ '   pause 1",
+                   "Macro: script commands, e.g.  sendln 'ls'   wait '$ '   pause 1",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
         });

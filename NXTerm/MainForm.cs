@@ -1145,9 +1145,8 @@ public sealed class MainForm : Form, IMacroHost
         "Serial (COM), Telnet, SSH2 and raw TCP\n" +
         "VT100/VT220/xterm emulation with 256 colors and true color\n" +
         "UTF-8, Thai (TIS-620), Japanese, Chinese and Korean encodings\n" +
-        "Logging, XMODEM, SSH SCP, TTL-style macros\n\n" +
-        "Released under the MIT License (Help > Open-source licenses).\n" +
-        "NXTerm is an independent project and is not affiliated with Tera Term.\n\n" +
+        "Logging, XMODEM, SSH SCP, macros, quick commands, RTSP viewer\n\n" +
+        "Released under the MIT License (Help > Open-source licenses).\n\n" +
         "Settings: " + AppSettings.DefaultPath +
         (Updater.Repo != null ? $"\nUpdates: github.com/{Updater.Repo}" : ""),
         "About NXTerm");

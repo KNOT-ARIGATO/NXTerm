@@ -50,7 +50,6 @@ SOFTWARE.
 
 ## Trademarks
 
-NXTerm is an independent project. It is not affiliated with, endorsed by or
-derived from Tera Term or the Tera Term Project. "Tera Term" is mentioned only
-to describe compatibility (for example the TTL macro syntax). All product names
-are the property of their respective owners.
+NXTerm is an independent project written from scratch. All product names
+mentioned in this software and its documentation are the property of their
+respective owners.
