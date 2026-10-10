@@ -1199,7 +1199,11 @@ public sealed class MainForm : Form, IMacroHost
         catch (Exception ex)
         {
             // A failed check must never disturb the user's work; only report it when they asked for it.
-            if (manual) MessageBox.Show(this, "Could not check for updates:\n" + ex.Message, "NXTerm: Updates", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            if (manual && MessageBox.Show(this,
+                    "Could not check for updates:\n" + Updater.DescribeFailure(ex, Updater.LastCertificateProblem) +
+                    "\n\nOpen the download page in your browser instead?",
+                    "NXTerm: Updates", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                Updater.OpenInBrowser($"https://github.com/{Updater.Repo}/releases/latest");
             return;
         }
         finally

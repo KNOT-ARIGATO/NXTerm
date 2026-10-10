@@ -459,6 +459,21 @@ Test("update: each kind of download only updates to its own kind", () =>
     Eq(false, NXTerm.Updates.Updater.IsStandalone);
 });
 
+Test("update: failures explain the cause and what to try", () =>
+{
+    var ssl = new HttpRequestException("The SSL connection could not be established, see inner exception.",
+        new System.Security.Authentication.AuthenticationException("The remote certificate is invalid because of errors in the certificate chain: NotTimeValid"));
+    var text = NXTerm.Updates.Updater.DescribeFailure(ssl, "RemoteCertificateChainErrors (NotTimeValid), issued by \"Sectigo\"");
+    Eq(true, text.Contains("was not accepted") && text.Contains("NotTimeValid") && !text.Contains("see inner exception"));
+    Eq(true, text.Contains("date and time of this PC"));
+    text = NXTerm.Updates.Updater.DescribeFailure(ssl, "RemoteCertificateChainErrors (UntrustedRoot), issued by \"Some Antivirus CA\"");
+    Eq(true, text.Contains("Some Antivirus CA") && text.Contains("Windows Update"));
+    text = NXTerm.Updates.Updater.DescribeFailure(new HttpRequestException("The SSL connection could not be established, see inner exception.",
+        new IOException("Unable to read data from the transport connection.")), null);
+    Eq(true, text.Contains("Unable to read data") && text.Contains("cut before it could be secured"));
+    Eq(true, NXTerm.Updates.Updater.DescribeFailure(new TaskCanceledException(), null).Contains("did not answer in time"));
+});
+
 Test("update: current version and repo are readable", () =>
 {
     Eq(true, NXTerm.Updates.Updater.CurrentVersionText.Split('.').Length == 3);

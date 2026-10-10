@@ -94,7 +94,8 @@ public sealed class UpdateDialog : Form
             var hint = ex is UnauthorizedAccessException
                 ? "\n\nNXTerm cannot replace its own file in this folder (for example Program Files). Download the new version from the release page instead."
                 : "";
-            if (MessageBox.Show(this, "The update failed:\n" + ex.Message + hint + "\n\nOpen the release page to download it manually?", Text,
+            var what = ex is HttpRequestException ? Updater.DescribeFailure(ex, Updater.LastCertificateProblem) : ex.Message;
+            if (MessageBox.Show(this, "The update failed:\n" + what + hint + "\n\nOpen the release page to download it manually?", Text,
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
                 Updater.OpenInBrowser(_release.PageUrl);
             Close();

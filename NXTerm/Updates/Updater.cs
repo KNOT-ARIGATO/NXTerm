@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.Security;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 
 namespace NXTerm.Updates;
@@ -18,13 +20,60 @@ public static class Updater
 
     static readonly Lazy<HttpClient> LazyHttp = new(() =>
     {
-        var c = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        // The certificate is validated exactly as usual; the callback only remembers why it was refused,
+        // because the exception itself just says "The SSL connection could not be established".
+        var handler = new SocketsHttpHandler();
+        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, chain, errors) =>
+        {
+            if (errors == SslPolicyErrors.None)
+            {
+                LastCertificateProblem = null;
+                return true;
+            }
+            var status = chain == null ? "" : string.Join(", ", chain.ChainStatus.Select(s => s.Status).Distinct());
+            var issuer = (certificate as X509Certificate2)?.GetNameInfo(X509NameType.SimpleName, forIssuer: true);
+            LastCertificateProblem = errors + (status.Length > 0 ? $" ({status})" : "") +
+                                     (string.IsNullOrEmpty(issuer) ? "" : $", issued by \"{issuer}\"");
+            return false;
+        };
+        var c = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
         c.DefaultRequestHeaders.UserAgent.ParseAdd($"NXTerm-Updater/{CurrentVersionText}");
         c.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
         return c;
     });
 
     static HttpClient Http => LazyHttp.Value;
+
+    /// <summary>Why the server certificate was refused on the last request, or null when it was accepted.</summary>
+    public static string? LastCertificateProblem { get; private set; }
+
+    /// <summary>Turns a failed update request into a message that says what went wrong and what to try.</summary>
+    public static string DescribeFailure(Exception ex, string? certificateProblem)
+    {
+        var inner = ex;
+        while (inner.InnerException != null) inner = inner.InnerException;
+        string text, hint;
+        if (certificateProblem != null)
+        {
+            text = "The security certificate of the server was not accepted.\n\nCertificate check: " + certificateProblem;
+            hint = certificateProblem.Contains("NotTimeValid")
+                ? "Check that the date and time of this PC are correct."
+                : certificateProblem.Contains("NameMismatch")
+                    ? "Something between this PC and GitHub answered instead of GitHub, for example a Wi-Fi login page, a proxy or a DNS filter."
+                    : "Windows on this PC does not trust the certificate it received. Either its root certificates are out of date " +
+                      "(run Windows Update), or an antivirus or company proxy is inspecting HTTPS traffic (the \"issued by\" name above shows who).";
+            return text + "\n\n" + hint;
+        }
+
+        // Without a certificate verdict the useful detail is the innermost error (the outer one only says "see inner exception").
+        text = ex.Message.Replace(", see inner exception", "").TrimEnd('.') + ".";
+        if (inner != ex && !ex.Message.Contains(inner.Message)) text += "\n" + inner.Message;
+        if (ex is TaskCanceledException or OperationCanceledException) hint = "GitHub did not answer in time. Check the internet connection and try again.";
+        else if (inner is System.Net.Sockets.SocketException or IOException)
+            hint = "The connection was cut before it could be secured. Check the internet connection, firewall, VPN or proxy and try again.";
+        else hint = "Check the internet connection and try again.";
+        return text + "\n\n" + hint;
+    }
 
     /// <summary>"owner/repo" baked in at build time (set by the release workflow), or null for local builds.</summary>
     public static string? Repo =>
@@ -49,6 +98,7 @@ public static class Updater
     public static async Task<ReleaseInfo?> GetLatestAsync(CancellationToken ct)
     {
         var repo = Repo ?? throw new InvalidOperationException("No update source is configured for this build.");
+        LastCertificateProblem = null;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         using var resp = await Http.GetAsync($"{ApiBase}/repos/{repo}/releases/latest", timeout.Token);
@@ -111,6 +161,7 @@ public static class Updater
     public static async Task InstallAsync(ReleaseInfo r, IProgress<long>? progress, CancellationToken ct)
     {
         if (r.AssetUrl == null) throw new InvalidOperationException("This release has no matching program file to download.");
+        LastCertificateProblem = null;
         var exe = ExePath;
         var tmp = exe + ".download";
         var old = exe + ".old";
