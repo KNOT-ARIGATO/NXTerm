@@ -47,6 +47,7 @@
 | SSH | ล็อกอินด้วย password, keyboard-interactive หรือ private key ตรวจ host key เหมือน `known_hosts` และส่ง/รับไฟล์ด้วย SCP ได้ |
 | การแสดงผล | VT100/VT220/xterm, สี 16/256/true color, ใช้กับ vim, htop, mc, top, less ได้ |
 | ภาษา | UTF-8, **ภาษาไทย (สระบน/ล่าง/วรรณยุกต์)**, TIS-620, ภาษาจีน/ญี่ปุ่น/เกาหลี |
+| **ไฮไลต์คำ** | ลงสีคำสำคัญบนหน้าจอให้อัตโนมัติ: ผ่าน/สำเร็จเป็นสีเขียว, error/fail เป็นสีแดง, warning เป็นสีเหลือง ปรับได้ที่ **Setup → Highlight keywords...** |
 | Log | บันทึกเป็น text ล้วน ใส่ timestamp ทุกบรรทัด หรือเก็บเป็น binary |
 | โอนไฟล์ | ส่งไฟล์ text/binary, ลากไฟล์มาวางเพื่อส่ง, XMODEM, SSH SCP |
 | Macro | สคริปต์สั่งงานอัตโนมัติ (ไฟล์ `.ttl`) ดู[รายการคำสั่ง](#macro) |

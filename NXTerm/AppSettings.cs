@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NXTerm.Connections;
+using NXTerm.Emulation;
 using NXTerm.QuickCommands;
 
 namespace NXTerm;
@@ -30,6 +31,10 @@ public sealed class AppSettings
     public string ForeColor = "#E0E0E0";
     public string BackColor = "#000000";
     public string CursorColor = "#00E000";
+
+    /// <summary>Keyword colouring on the terminal screen (Setup > Highlight keywords).</summary>
+    public bool HighlightEnabled = true;
+    public List<HighlightRule> Highlights = HighlightRule.Defaults();
 
     public bool LogPlainText = true;
     public bool LogTimestamp;

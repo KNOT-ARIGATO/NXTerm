@@ -204,6 +204,81 @@ Test("OSC sets the window title", () =>
     Eq("ok", Row(t, 0));
 });
 
+Test("highlight: keywords get their colour, display only", () =>
+{
+    var t = new VtTerminal(40, 3);
+    t.Feed("test 1: PASS\r\ntest 2: failed (failover ok)\r\nplain line");
+    var h = new Highlighter(HighlightRule.Defaults());
+    var colors = new Color?[40];
+    Color red = ColorTranslator.FromHtml("#FF5555"), green = ColorTranslator.FromHtml("#2ECC71");
+
+    Eq(true, h.Apply(t.GetLine(0), 40, colors));
+    Eq((Color?)green, colors[8]);            // P of PASS
+    Eq((Color?)green, colors[11]);           // S of PASS
+    Eq((Color?)null, colors[0]);             // "test" is not coloured
+    Eq(true, h.Apply(t.GetLine(1), 40, colors));
+    Eq((Color?)red, colors[8]);              // "failed"
+    Eq((Color?)null, colors[16]);            // "failover" is a different word
+    Eq((Color?)green, colors[25]);           // "ok"
+    Eq(false, h.Apply(t.GetLine(2), 40, colors));
+    Eq("test 1: PASS", t.GetLine(0).GetText(0, 40).TrimEnd());   // the stored text is untouched
+
+    // plain word, whole line, and an earlier rule winning over a later one
+    var custom = new Highlighter([
+        new HighlightRule { Pattern = "fail", Color = "#0000FF", WholeLine = true },
+        new HighlightRule { Pattern = "test", Color = "#00FF00" }]);
+    Eq(true, custom.Apply(t.GetLine(1), 40, colors));
+    Eq((Color?)Color.FromArgb(0, 255, 0), colors[0]);            // "test" matched
+    Eq((Color?)null, colors[8]);                                 // "fail" as a whole word does not match "failed"
+    t.Feed("\r\ntest: FAIL here");
+    Eq(true, custom.Apply(t.GetLine(t.Scrollback.Count + 2), 40, colors));
+    Eq((Color?)Color.FromArgb(0, 0, 255), colors[0]);            // whole line is blue, including "test"
+    Eq((Color?)Color.FromArgb(0, 0, 255), colors[14]);
+    try { new HighlightRule { Pattern = "(", IsRegex = true }.ToRegex(); throw new Exception("bad regex accepted"); }
+    catch (ArgumentException) { }
+});
+
+Test("highlight: default rules read real log lines sensibly", () =>
+{
+    var h = new Highlighter(HighlightRule.Defaults());
+    // What colour ("R", "Y", "G" or "-") does the given word get on this line?
+    string ColorOf(string line, string word)
+    {
+        var t = new VtTerminal(100, 2);
+        t.Feed(line);
+        var colors = new Color?[100];
+        if (!h.Apply(t.GetLine(0), 100, colors)) return "-";
+        var c = colors[line.IndexOf(word, StringComparison.Ordinal)];
+        return c == null ? "-" : c.Value.R > 200 && c.Value.G < 120 ? "R" : c.Value.R > 200 ? "Y" : "G";
+    }
+    (string Line, string Word, string Expect)[] cases =
+    [
+        ("Tests: 12 passed, 0 failed", "passed", "G"),
+        ("Tests: 12 passed, 0 failed", "failed", "G"),          // "0 failed" is good news
+        ("Build finished with no errors", "errors", "G"),
+        ("Tests: 10 passed, 2 failed", "failed", "R"),
+        ("ping: host not found", "found", "R"),                 // negated good word
+        ("status: not ok", "ok", "R"),
+        ("sh: cannot open /dev/ttyUSB0", "cannot", "R"),
+        ("ls: no such file or directory", "such", "R"),
+        ("[FAILED] Failed to start nginx.service", "FAILED", "R"),
+        ("[  OK  ] Started OpenSSH server", "OK", "G"),
+        ("Active: active (running) since Mon", "running", "G"),
+        ("E: invalid checksum", "invalid", "R"),
+        ("checksum valid", "valid", "G"),
+        ("WARNING: low voltage, CPU throttled", "throttled", "Y"),
+        ("Segmentation fault (core dumped)", "Segmentation", "R"),
+        ("wlan0: disconnected", "disconnected", "R"),
+        ("wlan0: connected to HomeWiFi", "connected", "G"),
+        ("Download complete", "complete", "G"),
+        ("starting failover node", "failover", "-"),           // not the word "fail"
+        ("password:", "password", "-"),                         // not the word "pass"
+        ("booking confirmed", "booking", "-"),                  // contains "ok" but is another word
+    ];
+    foreach (var (line, word, expect) in cases)
+        Eq(expect, ColorOf(line, word), $"\"{word}\" in \"{line}\":");
+});
+
 // ---------------------------------------------------------------- connections
 
 Test("command line parsing", () =>

@@ -36,6 +36,9 @@ public sealed class TerminalView : Control
     public bool BackspaceSendsDel = true;
     public string EnterSends = "\r";
     public ContextMenuStrip? PopupMenu;
+    /// <summary>Keyword colouring applied while drawing; null turns it off.</summary>
+    public Highlighter? Highlights;
+    Color?[] _highlight = [];
 
     /// <summary>Text the user typed or pasted, to be sent to the host.</summary>
     public event Action<string>? Input;
@@ -253,6 +256,8 @@ public sealed class TerminalView : Control
     {
         var cells = line.Cells;
         int n = Math.Min(cells.Length, Term.Cols);
+        if (_highlight.Length < n) _highlight = new Color?[n];
+        bool highlighted = Highlights != null && Highlights.Apply(line, n, _highlight);
         int i = 0;
         while (i < n)
         {
@@ -260,6 +265,8 @@ public sealed class TerminalView : Control
             if ((c.Attr & CellAttr.WideCont) != 0) { i++; continue; }
             bool sel = IsSelected(abs, i, sa, sb);
             var (fg, bg) = Resolve(c, sel);
+            Color? mark = highlighted ? _highlight[i] : null;
+            if (mark is { } keyword && !sel && (c.Attr & CellAttr.Invisible) == 0) fg = keyword;
             int start = i;
             string text;
             bool simple = _runSafe && IsSimple(c);
@@ -272,6 +279,7 @@ public sealed class TerminalView : Control
                 {
                     ref var d = ref cells[i];
                     if (!IsSimple(d) || d.Fg != c.Fg || d.Bg != c.Bg || d.Attr != c.Attr || IsSelected(abs, i, sa, sb) != sel) break;
+                    if (highlighted && _highlight[i] != mark) break;
                     _run.Append(d.Ch);
                     i++;
                 }

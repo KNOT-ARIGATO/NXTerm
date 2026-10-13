@@ -197,6 +197,7 @@ public sealed class MainForm : Form, IMacroHost
         [
             Item("&Terminal...", ShowTerminalSetup),
             Item("&Font...", ShowFontDialog),
+            Item("&Highlight keywords...", ShowHighlightSetup),
             tools,
             new ToolStripSeparator(),
             Item("&Save setup as...", SaveSetupAs),
@@ -499,6 +500,7 @@ public sealed class MainForm : Form, IMacroHost
         _view.BoldAsBright = s.BoldAsBright;
         _view.BackspaceSendsDel = s.BackspaceSendsDel;
         _view.EnterSends = s.NewLineString;
+        _view.Highlights = s.HighlightEnabled && s.Highlights.Count > 0 ? new Highlighter(s.Highlights) : null;
         _view.Term.MaxScrollback = Math.Max(0, s.ScrollbackLines);
         _view.Term.LfImpliesCr = s.ReceiveNewline == ReceiveNewline.LfAsCrLf;
         _view.Term.CrImpliesLf = s.ReceiveNewline == ReceiveNewline.CrAsCrLf;
@@ -545,6 +547,16 @@ public sealed class MainForm : Form, IMacroHost
         SaveSettings();
         if (newTermType && _conn != null)
             MessageBox.Show(this, "The new terminal ID will be used for the next connection.", "NXTerm", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
+    void ShowHighlightSetup()
+    {
+        using var dlg = new HighlightDialog(_settings.HighlightEnabled, _settings.Highlights);
+        if (dlg.ShowDialog(this) != DialogResult.OK) return;
+        _settings.HighlightEnabled = dlg.HighlightEnabled;
+        _settings.Highlights = dlg.Rules;
+        ApplySettings(resizeWindow: false);
+        SaveSettings();
     }
 
     void ShowFontDialog()
