@@ -14,7 +14,7 @@
     <Description>Terminal emulator for Windows: Serial, SSH, Telnet</Description>
     <Copyright>Copyright (c) 2026 NXTerm contributors. MIT License.</Copyright>
     <!-- The release workflow sets these from the git tag and the repository name. -->
-    <Version>1.3.0</Version>
+    <Version>1.3.1</Version>
     <GitHubRepo>KNOT-ARIGATO/NXTerm</GitHubRepo>
     <!-- "standalone" for the build that bundles the .NET runtime (see the release workflow); empty otherwise. -->
     <Flavor></Flavor>
@@ -25,6 +25,8 @@
     <AssemblyMetadata Include="GitHubRepo" Value="$(GitHubRepo)" />
     <AssemblyMetadata Include="Flavor" Value="$(Flavor)" />
     <EmbeddedResource Include="Resources\NXTerm.ico" LogicalName="NXTerm.ico" />
+    <!-- Public roots that Help > Check for updates falls back to when Windows has none for GitHub's certificate. -->
+    <EmbeddedResource Include="Resources\update-roots.pem" LogicalName="update-roots.pem" />
     <!-- Shown by Help > Open-source licenses, so the notices travel inside NXTerm.exe. -->
     <EmbeddedResource Include="..\LICENSE" LogicalName="LICENSE.txt" Link="Resources\LICENSE.txt" />
     <EmbeddedResource Include="..\THIRD-PARTY-NOTICES.md" LogicalName="THIRD-PARTY-NOTICES.md" Link="Resources\THIRD-PARTY-NOTICES.md" />

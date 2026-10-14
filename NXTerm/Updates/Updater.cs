@@ -20,12 +20,12 @@ public static class Updater
 
     static readonly Lazy<HttpClient> LazyHttp = new(() =>
     {
-        // The certificate is validated exactly as usual; the callback only remembers why it was refused,
+        // UpdateTrust validates the certificate; the callback also remembers why it was refused,
         // because the exception itself just says "The SSL connection could not be established".
         var handler = new SocketsHttpHandler();
         handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, chain, errors) =>
         {
-            if (errors == SslPolicyErrors.None)
+            if (UpdateTrust.Accept(certificate, chain, errors))
             {
                 LastCertificateProblem = null;
                 return true;
@@ -60,8 +60,9 @@ public static class Updater
                 ? "Check that the date and time of this PC are correct."
                 : certificateProblem.Contains("NameMismatch")
                     ? "Something between this PC and GitHub answered instead of GitHub, for example a Wi-Fi login page, a proxy or a DNS filter."
-                    : "Windows on this PC does not trust the certificate it received. Either its root certificates are out of date " +
-                      "(run Windows Update), or an antivirus or company proxy is inspecting HTTPS traffic (the \"issued by\" name above shows who).";
+                    : "Neither Windows nor NXTerm's own list of public root certificates recognises who signed it. Most likely an antivirus " +
+                      "or company proxy is inspecting HTTPS traffic (the \"issued by\" name above shows who). If that name is a public " +
+                      "certificate authority, run Windows Update to refresh the root certificates of this PC.";
             return text + "\n\n" + hint;
         }
 

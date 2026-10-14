@@ -48,6 +48,13 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Root certificates
+
+NXTerm.exe carries the public root certificates of Sectigo (including
+USERTrust), ISRG (Let's Encrypt) and DigiCert, exactly as those certificate
+authorities publish them. The update check uses them to verify GitHub's
+servers on PCs whose Windows root certificates are out of date.
+
 ## Trademarks
 
 NXTerm is an independent project written from scratch. All product names

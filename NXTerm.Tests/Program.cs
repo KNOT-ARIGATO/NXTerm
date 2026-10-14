@@ -1,5 +1,8 @@
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using NXTerm.Connections;
 using NXTerm.Emulation;
@@ -8,6 +11,7 @@ using NXTerm.Macro;
 using NXTerm.QuickCommands;
 using NXTerm.Rtsp;
 using NXTerm.Transfer;
+using NXTerm.Updates;
 
 // Self-contained test runner: dotnet run --project NXTerm.Tests
 // Pretend camera for trying the RTSP viewer by hand: dotnet run --project NXTerm.Tests -- --rtsp-server [port] [user password]
@@ -17,6 +21,42 @@ if (args is ["--rtsp-server", ..])
     using var camera = new TestRtspServer(port, args.Length > 3 ? args[2] : null, args.Length > 3 ? args[3] : null, widthMb: 40, heightMb: 30, fps: 15);
     Console.WriteLine($"Test camera running at rtsp://127.0.0.1:{camera.Port}/live  (640x480, 15 fps). Press Ctrl+C to stop.");
     Thread.Sleep(Timeout.Infinite);
+}
+
+// Online check of the update servers' certificates: dotnet run --project NXTerm.Tests -- --tls-check
+// "bundled roots" is the verdict a PC without any suitable Windows root certificate would reach.
+if (args is ["--tls-check", ..])
+{
+    bool allGood = true;
+    foreach (var host in new[] { "api.github.com", "github.com", "release-assets.githubusercontent.com" })
+    {
+        using var tcp = new TcpClient(host, 443);
+        using var ssl = new SslStream(tcp.GetStream(), false, (_, certificate, chain, errors) =>
+        {
+            X509Certificate2Collection sent = [.. chain!.ChainPolicy.ExtraStore];
+            bool bundled = UpdateTrust.ChainsTo((X509Certificate2)certificate!, sent, UpdateTrust.BundledRoots);
+
+            // Rebuild the chain the way a PC without the right root sees it, and pass that through the real decision.
+            using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+            using var unrelated = new CertificateRequest("CN=Unrelated root", key, HashAlgorithmName.SHA256).CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            using var bare = new X509Chain();
+            bare.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            bare.ChainPolicy.CustomTrustStore.Add(unrelated);
+            bare.ChainPolicy.ExtraStore.AddRange(sent);
+            bare.ChainPolicy.DisableCertificateDownloads = true;
+            bare.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            bool windowsWouldAccept = bare.Build((X509Certificate2)certificate!);
+            var status = string.Join("+", bare.ChainStatus.Select(s => s.Status).Distinct());
+            bool rescued = !windowsWouldAccept && UpdateTrust.Accept(certificate, bare, SslPolicyErrors.RemoteCertificateChainErrors);
+
+            allGood &= bundled && rescued;
+            Console.WriteLine($"{host,-38} Windows: {(errors == SslPolicyErrors.None ? "ok" : errors.ToString())}   bundled roots: {(bundled ? "ok" : "REFUSED")}" +
+                              $"   PC without the root ({status}): {(rescued ? "accepted by NXTerm" : "REFUSED")}");
+            return true;
+        });
+        ssl.AuthenticateAsClient(host);
+    }
+    return allGood ? 0 : 1;
 }
 
 var tests = new List<(string Name, Func<Task> Body)>();
@@ -547,6 +587,73 @@ Test("update: failures explain the cause and what to try", () =>
         new IOException("Unable to read data from the transport connection.")), null);
     Eq(true, text.Contains("Unable to read data") && text.Contains("cut before it could be secured"));
     Eq(true, NXTerm.Updates.Updater.DescribeFailure(new TaskCanceledException(), null).Contains("did not answer in time"));
+});
+
+Test("update: bundled root certificates load and are current", () =>
+{
+    var roots = NXTerm.Updates.UpdateTrust.BundledRoots;
+    Eq(8, roots.Count);
+    foreach (var r in roots)
+    {
+        Eq(r.Subject, r.Issuer, "self-signed root:");
+        Eq(true, r.NotAfter > DateTime.Now.AddYears(1), r.Subject + " still valid for a year:");
+        Eq(false, r.HasPrivateKey);
+    }
+    // the root GitHub's certificate chain ends in, and the one behind the release downloads
+    Eq(true, roots.Any(r => r.Thumbprint == "D1CBCA5DB2D52A7F693B674DE5F05A1D0C957DF0"), "USERTrust ECC:");
+    Eq(true, roots.Any(r => r.Thumbprint == "CABD2A79A1076A31F21D253635CB039D4329A5E8"), "ISRG Root X1:");
+});
+
+Test("update: only a chain to a known root is accepted", () =>
+{
+    // A private certificate authority, like the one an HTTPS-inspecting proxy or antivirus installs.
+    using var rootKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var caKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    using var leafKey = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+    var now = DateTimeOffset.UtcNow;
+    CertificateRequest Authority(string name, ECDsa key)
+    {
+        var req = new CertificateRequest("CN=" + name, key, HashAlgorithmName.SHA256);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
+        req.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(req.PublicKey, false));
+        return req;
+    }
+    using var root = Authority("NXTerm Test Root", rootKey).CreateSelfSigned(now.AddDays(-30), now.AddDays(300));
+    using var caWithKey = Authority("NXTerm Test CA", caKey).Create(root, now.AddDays(-20), now.AddDays(200), [1, 2, 3]).CopyWithPrivateKey(caKey);
+    X509Certificate2 Leaf(DateTimeOffset from, DateTimeOffset to)
+    {
+        var req = new CertificateRequest("CN=api.github.com", leafKey, HashAlgorithmName.SHA256);
+        req.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
+        req.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature, true));
+        req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+        var san = new SubjectAlternativeNameBuilder();
+        san.AddDnsName("api.github.com");
+        req.CertificateExtensions.Add(san.Build());
+        return req.Create(caWithKey, from, to, [4, 5, 6]);
+    }
+    using var leaf = Leaf(now.AddDays(-10), now.AddDays(100));
+    using var expired = Leaf(now.AddDays(-10), now.AddDays(-1));
+    using var ca = X509CertificateLoader.LoadCertificate(caWithKey.RawData);
+    X509Certificate2Collection sent = [ca], testRoots = [root];
+
+    Eq(true, UpdateTrust.ChainsTo(leaf, sent, testRoots), "chain to a root in the list:");
+    Eq(false, UpdateTrust.ChainsTo(leaf, sent, UpdateTrust.BundledRoots), "private root against the bundled list:");
+    Eq(false, UpdateTrust.ChainsTo(expired, sent, testRoots), "expired certificate:");
+    Eq(false, UpdateTrust.ChainsTo(leaf, [], testRoots), "missing intermediate:");
+    Eq(false, UpdateTrust.ChainsTo(leaf, sent, []), "no roots:");
+
+    // What Windows hands to the callback for this certificate: an untrusted root, as on the proxy's PC.
+    using var chain = new X509Chain();
+    chain.ChainPolicy.ExtraStore.Add(ca);
+    chain.ChainPolicy.ExtraStore.Add(root);
+    chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+    Eq(false, chain.Build(leaf));
+    Eq(true, chain.ChainStatus.Any(s => s.Status == X509ChainStatusFlags.UntrustedRoot));
+    Eq(false, UpdateTrust.Accept(leaf, chain, SslPolicyErrors.RemoteCertificateChainErrors), "private root is refused:");
+    Eq(true, UpdateTrust.Accept(leaf, chain, SslPolicyErrors.None), "what Windows accepted stays accepted:");
+    Eq(false, UpdateTrust.Accept(leaf, chain, SslPolicyErrors.RemoteCertificateChainErrors | SslPolicyErrors.RemoteCertificateNameMismatch), "wrong host name:");
+    Eq(false, UpdateTrust.Accept(null, null, SslPolicyErrors.RemoteCertificateNotAvailable));
 });
 
 Test("update: current version and repo are readable", () =>
