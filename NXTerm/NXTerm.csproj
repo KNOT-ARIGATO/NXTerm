@@ -14,7 +14,7 @@
     <Description>Terminal emulator for Windows: Serial, SSH, Telnet</Description>
     <Copyright>Copyright (c) 2026 NXTerm contributors. MIT License.</Copyright>
     <!-- The release workflow sets these from the git tag and the repository name. -->
-    <Version>1.4.0</Version>
+    <Version>1.4.1</Version>
     <GitHubRepo>KNOT-ARIGATO/NXTerm</GitHubRepo>
     <!-- "standalone" for the build that bundles the .NET runtime (see the release workflow); empty otherwise. -->
     <Flavor></Flavor>

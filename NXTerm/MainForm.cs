@@ -34,6 +34,7 @@ public sealed class MainForm : Form, IMacroHost
     long _lastBell;
     readonly QuickCommandSet _quick = QuickCommandSet.LoadDefault();
     readonly QuickCommandsPanel _quickPanel;
+    readonly Splitter _quickSplitter = new() { Dock = DockStyle.Bottom, Height = 5, MinSize = 60, MinExtra = 80 };
     QuickCommandsForm? _quickForm;
     ToolStripMenuItem _quickMenu = null!;
 
@@ -63,14 +64,15 @@ public sealed class MainForm : Form, IMacroHost
 
         _quickPanel = new QuickCommandsPanel(_quick, _settings.QuickGroup, ExecuteQuick);
         _quickPanel.CommandsChanged += BuildQuickMenu;
-        _quickPanel.DockToggleRequested += () => SetQuickMode(_settings.QuickMode == QuickMode.Docked ? QuickMode.Floating : QuickMode.Docked);
-        _quickPanel.HideRequested += () => SetQuickMode(QuickMode.Hidden);
-        _quickPanel.OnTop = _settings.QuickWindowOnTop;
-        _quickPanel.OnTopChanged += onTop =>
+        _quickPanel.DockButton.Click += (_, _) => SetQuickMode(_settings.QuickMode == QuickMode.Docked ? QuickMode.Floating : QuickMode.Docked);
+        _quickPanel.CloseButton.Click += (_, _) => SetQuickMode(QuickMode.Hidden);
+        _quickPanel.OnTopButton.Checked = _settings.QuickWindowOnTop;
+        _quickPanel.OnTopButton.CheckedChanged += (_, _) =>
         {
-            _settings.QuickWindowOnTop = onTop;
-            if (_quickForm != null) _quickForm.TopMost = onTop;
+            _settings.QuickWindowOnTop = _quickPanel.OnTopButton.Checked;
+            if (_quickForm != null) _quickForm.TopMost = _settings.QuickWindowOnTop;
         };
+        _quickSplitter.SplitterMoved += (_, _) => _settings.QuickDockHeight = _quickPanel.Height;
 
         BuildMenu();
         _status.Items.AddRange([_stConn, _stUpdate, _stMacro, _stLog, _stSize]);
@@ -349,8 +351,9 @@ public sealed class MainForm : Form, IMacroHost
         SuspendLayout();
         if (mode != QuickMode.Docked && Controls.Contains(_quickPanel))
         {
-            int h = _quickPanel.Height;
+            int h = _quickPanel.Height + _quickSplitter.Height;
             Controls.Remove(_quickPanel);
+            Controls.Remove(_quickSplitter);
             if (keepSize) Height -= h;
         }
         if (mode != QuickMode.Floating) _quickForm?.Hide();
@@ -358,18 +361,21 @@ public sealed class MainForm : Form, IMacroHost
         if (mode == QuickMode.Docked && !Controls.Contains(_quickPanel))
         {
             _quickForm?.Controls.Remove(_quickPanel);
+            _quickPanel.Dock = DockStyle.Bottom;
+            _quickPanel.Height = Math.Clamp(_settings.QuickDockHeight, 60, 600);
+            Controls.Add(_quickSplitter);
             Controls.Add(_quickPanel);
-            _quickPanel.Dock = DockStyle.Bottom;  // the panel sizes itself to its buttons
             // WinForms docks the highest child index first (outermost): status bar and menu at the edges,
-            // then the quick panel, and the terminal fills what is left.
+            // then quick panel and splitter, and the terminal fills what is left.
             Controls.SetChildIndex(_view, 0);
-            Controls.SetChildIndex(_quickPanel, 1);
-            Controls.SetChildIndex(_menu, 2);
-            Controls.SetChildIndex(_status, 3);
+            Controls.SetChildIndex(_quickSplitter, 1);
+            Controls.SetChildIndex(_quickPanel, 2);
+            Controls.SetChildIndex(_menu, 3);
+            Controls.SetChildIndex(_status, 4);
             if (keepSize)
             {
                 var area = Screen.FromControl(this).WorkingArea;
-                Height = Math.Min(Height + _quickPanel.Height, area.Height);
+                Height = Math.Min(Height + _quickPanel.Height + _quickSplitter.Height, area.Height);
                 if (Bottom > area.Bottom) Top = Math.Max(area.Top, area.Bottom - Height);
             }
         }
@@ -388,7 +394,9 @@ public sealed class MainForm : Form, IMacroHost
 
         _settings.QuickMode = mode;
         if (mode != QuickMode.Hidden) _settings.QuickLastMode = mode;
-        _quickPanel.SetMode(mode);
+        _quickPanel.DockButton.Text = mode == QuickMode.Docked ? "Separate window" : "Dock in main window";
+        _quickPanel.DockButton.ToolTipText = mode == QuickMode.Docked ? "Move the buttons to their own window" : "Put the buttons under the terminal";
+        _quickPanel.OnTopButton.Visible = mode == QuickMode.Floating;
         if (mode != QuickMode.Floating) _view.Focus();
     }
 
@@ -514,7 +522,7 @@ public sealed class MainForm : Form, IMacroHost
         if (WindowState != FormWindowState.Normal) WindowState = FormWindowState.Normal;
         var sz = _view.ClientSizeFor(cols, rows);
         int extra = _menu.Height + _status.Height +
-                    (Controls.Contains(_quickPanel) ? _quickPanel.Height : 0);
+                    (Controls.Contains(_quickPanel) ? _quickPanel.Height + _quickSplitter.Height : 0);
         ClientSize = new Size(sz.Width, sz.Height + extra);
     }
 
@@ -784,7 +792,6 @@ public sealed class MainForm : Form, IMacroHost
             ? $"Connected: {(_connSession != null ? _connSession.Name + "  (" + _connParams + ")" : _connParams)}"
             : "Not connected  (Alt+N: new connection, or pick one from the Sessions menu)";
         foreach (var i in _needConnection) i.Enabled = on;
-        _quickPanel.SetConnected(on);
         _miScp.Enabled = _conn is SshConnection;
         _miStopLog.Enabled = _logger != null;
         _miStopMacro.Enabled = _macro != null;
@@ -1100,7 +1107,7 @@ public sealed class MainForm : Form, IMacroHost
         "  Alt+C  Copy                    Alt+V  Paste\n" +
         "  Alt+R  Paste + Enter           Alt+B  Send break\n" +
         "  Alt+M  Run macro               Alt+D  Duplicate session\n" +
-        "  Alt+K  Show/hide quick commands   Alt+1..9  Button 1-9 of the current tab (number in its corner)\n" +
+        "  Alt+K  Quick commands window   Alt+1..9  Quick command 1-9 of the current tab\n" +
         "  Ctrl+Shift+C / Ctrl+Insert     Copy\n" +
         "  Ctrl+Shift+V / Shift+Insert    Paste\n" +
         "  Shift+PageUp / PageDown        Scroll back\n\n" +
