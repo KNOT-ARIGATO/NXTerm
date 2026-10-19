@@ -23,6 +23,42 @@ if (args is ["--rtsp-server", ..])
     Thread.Sleep(Timeout.Infinite);
 }
 
+// Diagnose a real camera: dotnet run --project NXTerm.Tests -- --rtsp-probe rtsp://address/path [seconds]
+if (args is ["--rtsp-probe", var probeUrl, ..])
+{
+    int seconds = args.Length > 2 ? int.Parse(args[2]) : 8;
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
+    using var client = new RtspClient(probeUrl);
+    using var decoder = new H264Decoder();
+    int frames = 0, keys = 0, decoded = 0;
+    var started = DateTime.Now;
+    client.FrameReceived += (data, ts, key) =>
+    {
+        frames++;
+        if (key) keys++;
+        if (frames <= 5 || key && keys <= 3)
+        {
+            var nals = new List<int>();
+            for (int i = 0; i + 4 < data.Length; i++)
+                if (data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 0 && data[i + 3] == 1) nals.Add(data[i + 4] & 0x1F);
+            Console.WriteLine($"  frame {frames}: {data.Length} bytes, ts {ts}, key={key}, NAL types [{string.Join(",", nals)}]");
+        }
+        try
+        {
+            decoder.Decode(data, ts * 1000L / 9, (w, h) => new byte[w * h * 4], (_, w, h) =>
+            {
+                if (++decoded == 1) Console.WriteLine($"  first decoded picture {w}x{h} after {(DateTime.Now - started).TotalSeconds:F1}s");
+            });
+        }
+        catch (Exception ex) { Console.WriteLine($"  decoder error on frame {frames}: {ex.GetType().Name}: {ex.Message}"); }
+    };
+    try { client.Run(cts.Token, () => Console.WriteLine($"PLAY accepted after {(DateTime.Now - started).TotalSeconds:F1}s")); }
+    catch (OperationCanceledException) { }
+    catch (RtspException ex) { Console.WriteLine($"RtspException (fatal={ex.Fatal}): {ex.Message}"); }
+    Console.WriteLine($"{seconds}s: {client.BytesReceived} bytes, {frames} frames ({keys} key), {decoded} decoded");
+    return 0;
+}
+
 // Online check of the update servers' certificates: dotnet run --project NXTerm.Tests -- --tls-check
 // "bundled roots" is the verdict a PC without any suitable Windows root certificate would reach.
 if (args is ["--tls-check", ..])
@@ -732,6 +768,42 @@ TestAsync("rtsp: client logs in (Digest) and receives the camera's pictures", as
     Eq(Convert.ToHexString(TestH264.AnnexBFrame(20, 15, 0)), Convert.ToHexString(frames[0]));
     Eq(Convert.ToHexString(TestH264.AnnexBFrame(20, 15, 2)), Convert.ToHexString(frames[2]));
     Eq(false, client.DisplayUrl.Contains("s3cret"));
+});
+
+Test("rtsp: a whole picture packed as one NAL unit (Ameba cameras) is shown", () =>
+{
+    static byte[] Rtp(uint ts, bool marker, params byte[] payload)
+    {
+        var p = new byte[12 + payload.Length];
+        p[0] = 0x80;
+        p[1] = (byte)(96 | (marker ? 0x80 : 0));
+        for (int i = 0; i < 4; i++) p[4 + i] = (byte)(ts >> (24 - 8 * i));
+        payload.CopyTo(p, 12);
+        return p;
+    }
+    var frames = new List<(string Hex, uint Ts, bool Key)>();
+    var d = new H264Depacketizer();
+    d.FrameReady += (f, ts, key) => frames.Add((Convert.ToHexString(f), ts, key));
+    // Key frame as the camera sends it: FU-A "of an SPS" that really holds SPS, PPS, SEI and the IDR slice.
+    d.OnRtp(Rtp(10, false, 0x7C, 0x87, 0x42, 0, 0, 0, 1, 0x68, 0xCE));
+    d.OnRtp(Rtp(10, false, 0x7C, 0x07, 0, 0, 1, 0x06, 0x05, 0, 0, 0, 1));
+    d.OnRtp(Rtp(10, true, 0x7C, 0x47, 0x65, 0x88, 0x84));
+    Eq(1, frames.Count);
+    Eq(("0000000167420000000168CE0000010605000000016588" + "84", 10u, true), frames[0]);
+    // Next picture: FU-A "of an SEI" with a P slice inside, then a small one as a single packet.
+    d.OnRtp(Rtp(20, false, 0x1C, 0x86, 0x05, 0x01));
+    d.OnRtp(Rtp(20, true, 0x1C, 0x46, 0, 0, 0, 1, 0x41, 0x9A));
+    d.OnRtp(Rtp(30, true, 0x06, 0x05, 0x01, 0, 0, 0, 1, 0x41, 0x9B));
+    Eq(3, frames.Count);
+    Eq(("0000000106050100000001419A", 20u, false), frames[1]);
+    Eq(("0000000106050100000001419B", 30u, false), frames[2]);
+
+    // The camera only starts sending after the audio track is set up too, so every track must be listed.
+    var (track, others, _, _, _) = RtspClient.ParseSdp(
+        "v=0\r\ns=ameba\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=control:streamid=0\r\n" +
+        "m=audio 0 RTP/AVP 97\r\na=rtpmap:97 mpeg4-generic/16000/1\r\na=control:streamid=1\r\n");
+    Eq("streamid=0", track);
+    Eq("streamid=1", string.Join(",", others));
 });
 
 Test("rtsp: wrong or missing password is reported, not retried", () =>

@@ -33,7 +33,8 @@ public sealed class RtspClient : IDisposable
     int _cseq, _nonceCount, _rtpChannel;
     string? _session, _authScheme, _realm, _nonce, _qop, _opaque;
     bool _triedAuth, _supportsGetParameter;
-    int _sessionTimeout = 60;
+    int _sessionTimeout = 60, _tornDown;
+    string? _playUrl;
     long _bytes;
 
     /// <summary>Complete pictures as Annex B data, with the RTP timestamp (90 kHz) and a key frame flag. Raised on the reading thread.</summary>
@@ -66,7 +67,12 @@ public sealed class RtspClient : IDisposable
     public void Run(CancellationToken ct, Action? onPlaying = null)
     {
         _tcp = new TcpClient { NoDelay = true, ReceiveTimeout = 10000, SendTimeout = 10000 };
-        using var closeOnCancel = ct.Register(() => _tcp.Close());
+        // On Disconnect, say goodbye before closing: some small cameras restart when a viewer just drops the connection.
+        using var closeOnCancel = ct.Register(() =>
+        {
+            Teardown();
+            _tcp.Close();
+        });
         try
         {
             try
@@ -85,7 +91,7 @@ public sealed class RtspClient : IDisposable
 
             var describe = Request("DESCRIBE", _requestUrl, ("Accept", "application/sdp"));
             string baseUrl = describe.Header("Content-Base") ?? describe.Header("Content-Location") ?? _requestUrl;
-            var (trackControl, sessionControl, sps, pps) = ParseSdp(describe.Body);
+            var (trackControl, otherTracks, sessionControl, sps, pps) = ParseSdp(describe.Body);
             _depacketizer.SetParameterSets(sps, pps);
 
             var setup = Request("SETUP", Resolve(baseUrl, trackControl), ("Transport", "RTP/AVP/TCP;unicast;interleaved=0-1"));
@@ -96,7 +102,16 @@ public sealed class RtspClient : IDisposable
             var channel = Regex.Match(setup.Header("Transport") ?? "", @"interleaved\s*=\s*(\d+)", RegexOptions.IgnoreCase);
             if (channel.Success) _rtpChannel = int.Parse(channel.Groups[1].Value);
 
-            Request("PLAY", sessionControl is { } sc && sc.StartsWith("rtsp://", StringComparison.OrdinalIgnoreCase) ? sc : baseUrl, ("Range", "npt=0.000-"));
+            // Some cameras (Realtek Ameba boards, for one) only start sending once every track is set up,
+            // so the audio and any other tracks are set up as well; their packets are simply ignored.
+            for (int i = 0; i < otherTracks.Count; i++)
+            {
+                try { Request("SETUP", Resolve(baseUrl, otherTracks[i]), ("Transport", $"RTP/AVP/TCP;unicast;interleaved={2 * i + 2}-{2 * i + 3}")); }
+                catch (RtspException) { }  // a camera that refuses an extra track still plays the video
+            }
+
+            _playUrl = sessionControl is { } sc && sc.StartsWith("rtsp://", StringComparison.OrdinalIgnoreCase) ? sc : baseUrl;
+            Request("PLAY", _playUrl, ("Range", "npt=0.000-"));
             onPlaying?.Invoke();
 
             long keepAliveEvery = Math.Min(_sessionTimeout / 2, 25) * 1000L, lastKeepAlive = Environment.TickCount64;
@@ -119,20 +134,26 @@ public sealed class RtspClient : IDisposable
         }
         finally
         {
-            if (_session != null && _tcp.Connected)
-            {
-                try { Send("TEARDOWN", _requestUrl); }
-                catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException) { }
-            }
+            Teardown();
         }
         ct.ThrowIfCancellationRequested();
     }
 
+    /// <summary>Ends the camera's session once (from the reading thread or from a cancel).</summary>
+    void Teardown()
+    {
+        if (_session == null || _tcp?.Connected != true || Interlocked.Exchange(ref _tornDown, 1) != 0) return;
+        try { Send("TEARDOWN", _playUrl ?? _requestUrl); }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException or InvalidOperationException) { }
+    }
+
     // ------------------------------------------------------------------ SDP
 
-    static (string Track, string? Session, byte[]? Sps, byte[]? Pps) ParseSdp(string sdp)
+    /// <summary>Reads the SDP: the control of the first video track, the controls of all other tracks, and the H.264 parameter sets.</summary>
+    public static (string Track, List<string> Others, string? Session, byte[]? Sps, byte[]? Pps) ParseSdp(string sdp)
     {
         string? sessionControl = null, trackControl = null, fmtp = null;
+        var others = new List<string>();
         var codecs = new Dictionary<string, string>();
         bool inVideo = false, seenMedia = false, done = false;
         foreach (var raw in sdp.Split('\n'))
@@ -140,14 +161,15 @@ public sealed class RtspClient : IDisposable
             var line = raw.Trim();
             if (line.StartsWith("m=", StringComparison.Ordinal))
             {
-                if (inVideo) done = true;  // only the first video track is used
+                if (inVideo) done = true;  // only the first video track is shown
                 seenMedia = true;
                 inVideo = !done && line.StartsWith("m=video", StringComparison.Ordinal);
             }
             else if (line.StartsWith("a=control:", StringComparison.Ordinal))
             {
                 if (inVideo) trackControl = line[10..].Trim();
-                else if (!seenMedia) sessionControl = line[10..].Trim();
+                else if (seenMedia) others.Add(line[10..].Trim());
+                else sessionControl = line[10..].Trim();
             }
             else if (inVideo && line.StartsWith("a=rtpmap:", StringComparison.Ordinal))
             {
@@ -177,7 +199,7 @@ public sealed class RtspClient : IDisposable
             }
             catch (FormatException) { sps = pps = null; }
         }
-        return (trackControl ?? "", sessionControl, sps, pps);
+        return (trackControl ?? "", others, sessionControl, sps, pps);
     }
 
     static string Resolve(string baseUrl, string control)

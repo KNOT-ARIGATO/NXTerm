@@ -12,6 +12,7 @@ public sealed class H264Depacketizer
 
     readonly MemoryStream _picture = new();
     uint _timestamp;
+    int _nalStart;
     bool _open, _fragment, _hasIdr, _hasSps, _hasSlice, _gotKeyFrame;
     byte[]? _sps, _pps;
 
@@ -69,11 +70,16 @@ public sealed class H264Depacketizer
             {
                 byte header = (byte)((payload[0] & 0xE0) | (fu & 0x1F));
                 _picture.Write(StartCode);
+                _nalStart = (int)_picture.Length;
                 _picture.WriteByte(header);
                 Note(header & 0x1F);
                 _fragment = true;
             }
-            if (_fragment) _picture.Write(payload[2..]);
+            if (_fragment)
+            {
+                _picture.Write(payload[2..]);
+                if ((fu & 0x40) != 0) NoteEmbedded(_nalStart);
+            }
             if ((fu & 0x40) != 0) _fragment = false;
         }
         if (marker) Flush();
@@ -85,9 +91,40 @@ public sealed class H264Depacketizer
         if (type == 7) _sps = nal.ToArray();
         else if (type == 8) _pps = nal.ToArray();
         _picture.Write(StartCode);
+        int start = (int)_picture.Length;
         _picture.Write(nal);
         Note(type);
+        NoteEmbedded(start);
         _fragment = false;
+    }
+
+    /// <summary>
+    /// Some cameras (Realtek Ameba boards, for one) send a whole picture as if it were one NAL unit: SEI or SPS first,
+    /// then the other units each behind their own start code. The data is already in the Annex B form the decoder
+    /// reads, so it is kept as it is; only the units inside are noted, so the picture is not mistaken for one without
+    /// a slice. A real NAL unit never contains 00 00 01 (emulation prevention), so this finds nothing in normal streams.
+    /// </summary>
+    void NoteEmbedded(int nalStart)
+    {
+        var buf = _picture.GetBuffer();
+        int len = (int)_picture.Length;
+        for (int i = nalStart + 1; i + 3 < len; i++)
+        {
+            if (buf[i] != 0 || buf[i + 1] != 0 || buf[i + 2] != 1) continue;
+            int start = i + 3, type = buf[start] & 0x1F;
+            Note(type);
+            if (type is 7 or 8)
+            {
+                int end = start + 1;
+                while (end + 2 < len && !(buf[end] == 0 && buf[end + 1] == 0 && buf[end + 2] == 1)) end++;
+                if (end + 2 >= len) end = len;
+                while (end > start + 1 && buf[end - 1] == 0) end--;  // the zero before a 4-byte start code
+                var unit = buf.AsSpan(start, end - start).ToArray();
+                if (type == 7) _sps = unit;
+                else _pps = unit;
+            }
+            i = start;
+        }
     }
 
     void Note(int nalType)
