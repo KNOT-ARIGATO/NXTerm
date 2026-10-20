@@ -12,11 +12,16 @@ public sealed class RtspViewerForm : Form
 
     readonly AppSettings _settings;
     readonly Action _saveSettings;
-    readonly ComboBox _url = new() { Dock = DockStyle.Fill, Margin = new Padding(3, 5, 3, 3) };
+    static readonly string[] CommonProfiles = ["profile1", "profile2", "stream1", "stream2", "live", "h264"];
+
+    readonly ComboBox _ip = new() { Width = 170, Margin = new Padding(3, 5, 3, 3) };
+    readonly ComboBox _profile = new() { Dock = DockStyle.Fill, MinimumSize = new Size(90, 0), Margin = new Padding(3, 5, 3, 3) };
+    readonly ToolTip _tip = new() { AutoPopDelay = 20000 };
+    readonly List<string> _history = [];  // full addresses, most recent first
     readonly Button _connect = new() { Text = "Connect", AutoSize = true, MinimumSize = new Size(90, 0) };
     readonly Button _snapshot = new() { Text = "Snapshot", AutoSize = true, Enabled = false };
     readonly CheckBox _onTop = new() { Text = "Always on top", AutoSize = true, Margin = new Padding(8, 7, 3, 3) };
-    readonly TableLayoutPanel _bar = new() { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 5, Padding = new Padding(4, 2, 4, 2) };
+    readonly TableLayoutPanel _bar = new() { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 7, Padding = new Padding(4, 2, 4, 2) };
     readonly VideoPanel _video = new() { Dock = DockStyle.Fill };
     readonly StatusStrip _status = new();
     readonly ToolStripStatusLabel _stState = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -51,23 +56,42 @@ public sealed class RtspViewerForm : Form
         KeyPreview = true;
 
         _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _bar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _bar.Controls.Add(new Label { Text = "Address:", AutoSize = true, Margin = new Padding(3, 8, 3, 3) }, 0, 0);
-        _bar.Controls.Add(_url, 1, 0);
-        _bar.Controls.Add(_connect, 2, 0);
-        _bar.Controls.Add(_snapshot, 3, 0);
-        _bar.Controls.Add(_onTop, 4, 0);
+        _bar.Controls.Add(new Label { Text = "IP:", AutoSize = true, Margin = new Padding(3, 8, 3, 3) }, 0, 0);
+        _bar.Controls.Add(_ip, 1, 0);
+        _bar.Controls.Add(new Label { Text = "Profile:", AutoSize = true, Margin = new Padding(8, 8, 3, 3) }, 2, 0);
+        _bar.Controls.Add(_profile, 3, 0);
+        _bar.Controls.Add(_connect, 4, 0);
+        _bar.Controls.Add(_snapshot, 5, 0);
+        _bar.Controls.Add(_onTop, 6, 0);
+        _tip.SetToolTip(_ip, "Camera IP address, for example 192.168.43.1\n" +
+                             "With a port: 192.168.43.1:8554\n" +
+                             "With a login: user:password@192.168.1.10\n" +
+                             "A whole rtsp:// address can be pasted here too.");
+        _tip.SetToolTip(_profile, "The stream name after the address, for example profile1 or stream1");
+        foreach (var name in CommonProfiles) _profile.Items.Add(name);
         _status.Items.AddRange([_stState, _stInfo]);
         Controls.Add(_video);
         Controls.Add(_bar);
         Controls.Add(_status);
 
         foreach (var saved in settings.RtspHistory)
-            if (Secrets.Unprotect(saved, Entropy) is { Length: > 0 } url) _url.Items.Add(url);
-        if (_url.Items.Count > 0) _url.SelectedIndex = 0;
+            if (Secrets.Unprotect(saved, Entropy) is { Length: > 0 } url) _history.Add(url);
+        FillHistory();
+        if (_history.Count > 0) ShowAddress(_history[0]);
+        else _profile.Text = CommonProfiles[0];
+        _ip.SelectionChangeCommitted += (_, _) =>
+        {
+            // Picking a camera from the list brings back the profile last used with it.
+            var host = _ip.SelectedItem as string;
+            var last = _history.FirstOrDefault(u => SplitAddress(u).Host.Equals(host, StringComparison.OrdinalIgnoreCase));
+            if (last != null) _profile.Text = SplitAddress(last).Profile;
+        };
 
         var b = settings.RtspWindowBounds;
         var saved2 = b is { Length: 4 } ? new Rectangle(b[0], b[1], b[2], b[3]) : Rectangle.Empty;
@@ -80,18 +104,19 @@ public sealed class RtspViewerForm : Form
             if (_cts != null) Stop("Disconnected");
             else Start();
         };
-        _url.KeyDown += (_, e) =>
-        {
-            if (e.KeyCode != Keys.Enter || _cts != null) return;
-            e.Handled = e.SuppressKeyPress = true;
-            Start();
-        };
+        foreach (var box in new[] { _ip, _profile })
+            box.KeyDown += (_, e) =>
+            {
+                if (e.KeyCode != Keys.Enter || _cts != null) return;
+                e.Handled = e.SuppressKeyPress = true;
+                Start();
+            };
         _snapshot.Click += (_, _) => SaveSnapshot();
         _onTop.CheckedChanged += (_, _) => TopMost = _onTop.Checked;
         _video.DoubleClick += (_, _) => ToggleFullScreen();
         _statsTimer.Tick += (_, _) => UpdateStats();
-        _video.Message = "Enter the camera address and press Connect, for example:\n\n" +
-                         "rtsp://user:password@192.168.1.10:554/stream1\n\n" +
+        _video.Message = "Enter the camera IP and profile, then press Connect, for example:\n\n" +
+                         "IP  192.168.43.1      Profile  profile1\n\n" +
                          "H.264 video over RTSP (TCP).  Double-click the picture for full screen.";
         SetState("Not connected");
     }
@@ -100,17 +125,17 @@ public sealed class RtspViewerForm : Form
 
     void Start()
     {
-        var url = _url.Text.Trim();
-        if (url.Length == 0)
+        var url = BuildAddress();
+        if (url == null)
         {
-            _url.Focus();
+            _ip.Focus();
             return;
         }
         int generation = ++_generation;
         _cts = new CancellationTokenSource();
         var token = _cts.Token;
         _connect.Text = "Disconnect";
-        _url.Enabled = false;
+        _ip.Enabled = _profile.Enabled = false;
         _frames = 0;
         _lastBytes = 0;
         _statsTimer.Start();
@@ -126,7 +151,7 @@ public sealed class RtspViewerForm : Form
         _client = null;
         _statsTimer.Stop();
         _connect.Text = "Connect";
-        _url.Enabled = true;
+        _ip.Enabled = _profile.Enabled = true;
         _snapshot.Enabled = false;
         _stInfo.Text = "";
         _video.SetImage(null);
@@ -272,12 +297,58 @@ public sealed class RtspViewerForm : Form
 
     void Remember(string url)
     {
-        var list = _url.Items.Cast<string>().Where(u => !u.Equals(url, StringComparison.OrdinalIgnoreCase)).Prepend(url).Take(MaxHistory).ToList();
-        _url.Items.Clear();
-        foreach (var u in list) _url.Items.Add(u);
-        _url.Text = url;
+        var list = _history.Where(u => !u.Equals(url, StringComparison.OrdinalIgnoreCase)).Prepend(url).Take(MaxHistory).ToList();
+        _history.Clear();
+        _history.AddRange(list);
+        FillHistory();
+        ShowAddress(url);
         _settings.RtspHistory = list.Select(u => Secrets.Protect(u, Entropy)).ToList();
         _saveSettings();
+    }
+
+    // ------------------------------------------------------------------ address
+
+    /// <summary>The rtsp:// address from the IP and Profile boxes, or null when there is no IP.</summary>
+    string? BuildAddress()
+    {
+        var ip = _ip.Text.Trim();
+        if (ip.Length == 0) return null;
+        if (ip.Contains("://"))
+        {
+            // A whole address was pasted into the IP box: split it into the two boxes.
+            ShowAddress(ip);
+            return ip;
+        }
+        var profile = _profile.Text.Trim().TrimStart('/');
+        return $"rtsp://{ip}/{profile}";
+    }
+
+    /// <summary>Splits rtsp://[login@]host[:port]/profile into the part for the IP box and the part for the Profile box.</summary>
+    public static (string Host, string Profile) SplitAddress(string url)
+    {
+        var rest = url.Trim();
+        int scheme = rest.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0) rest = rest[(scheme + 3)..];
+        int slash = rest.IndexOf('/', rest.LastIndexOf('@') + 1);
+        return slash < 0 ? (rest, "") : (rest[..slash], rest[(slash + 1)..]);
+    }
+
+    void ShowAddress(string url)
+    {
+        var (host, profile) = SplitAddress(url);
+        _ip.Text = host;
+        _profile.Text = profile;
+    }
+
+    void FillHistory()
+    {
+        _ip.Items.Clear();
+        foreach (var host in _history.Select(u => SplitAddress(u).Host).Distinct(StringComparer.OrdinalIgnoreCase))
+            _ip.Items.Add(host);
+        var profiles = _history.Select(u => SplitAddress(u).Profile).Concat(CommonProfiles)
+            .Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        _profile.Items.Clear();
+        foreach (var x in profiles) _profile.Items.Add(x);
     }
 
     void SaveSnapshot()

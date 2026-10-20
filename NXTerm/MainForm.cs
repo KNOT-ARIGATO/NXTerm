@@ -22,7 +22,7 @@ public sealed class MainForm : Form, IMacroHost
     readonly ToolStripStatusLabel _stConn = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
     readonly ToolStripStatusLabel _stMacro = new(), _stLog = new(), _stSize = new();
 
-    IConnection? _conn;
+    volatile IConnection? _conn;  // read by the receive threads too
     ConnectionParams? _connParams;
     Encoding _enc = Encoding.UTF8;
     Decoder _dec = Encoding.UTF8.GetDecoder();
@@ -62,9 +62,9 @@ public sealed class MainForm : Form, IMacroHost
         StartPosition = FormStartPosition.WindowsDefaultLocation;
         KeyPreview = false;
 
-        _quickPanel = new QuickCommandsPanel(_quick, _settings.QuickGroup, ExecuteQuick);
+        _quickPanel = new QuickCommandsPanel(_quick, _settings.QuickSet, _settings.QuickGroup, ExecuteQuick);
         _quickPanel.CommandsChanged += BuildQuickMenu;
-        _quickPanel.DockButton.Click += (_, _) => SetQuickMode(_settings.QuickMode == QuickMode.Docked ? QuickMode.Floating : QuickMode.Docked);
+        _quickPanel.DockButton.Click += (_, _) => SetQuickMode(_settings.QuickMode == QuickMode.Floating ? LastDock : QuickMode.Floating);
         _quickPanel.CloseButton.Click += (_, _) => SetQuickMode(QuickMode.Hidden);
         _quickPanel.OnTopButton.Checked = _settings.QuickWindowOnTop;
         _quickPanel.OnTopButton.CheckedChanged += (_, _) =>
@@ -272,7 +272,7 @@ public sealed class MainForm : Form, IMacroHost
         foreach (var s in _settings.Sessions.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             var session = s;
-            items.Add(new ToolStripMenuItem(s.Name.Replace("&", "&&"), null, async (_, _) => await ConnectSessionAsync(session))
+            items.Add(new ToolStripMenuItem(s.Name.Replace("&", "&&"), null, async (_, _) => await OpenConnectionAsync(session.ToParams(), session))
             {
                 ToolTipText = s.Summary,
                 ShortcutKeyDisplayString = s.Summary,
@@ -322,17 +322,28 @@ public sealed class MainForm : Form, IMacroHost
         var show = Item("Show quick commands", ToggleQuick, Keys.Alt | Keys.K);
         show.Checked = _settings.QuickMode != QuickMode.Hidden;
         _quickMenu.DropDownItems.Add(show);
-        _quickMenu.DropDownItems.Add(Item(_settings.QuickMode == QuickMode.Floating ? "Dock in main window" : "Show in separate window",
-            () => SetQuickMode(_settings.QuickMode == QuickMode.Floating ? QuickMode.Docked : QuickMode.Floating)));
-        _quickMenu.DropDownItems.Add(Item("Add command...", () => _quickPanel.AddCommand(_quickPanel.SelectedGroup)));
+        foreach (var (mode, text) in new[] { (QuickMode.Docked, "Below the terminal"), (QuickMode.DockedTop, "Above the terminal"), (QuickMode.Floating, "In a separate window") })
+        {
+            var where = Item(text, () => SetQuickMode(mode));
+            where.Checked = _settings.QuickMode == mode;
+            _quickMenu.DropDownItems.Add(where);
+        }
+        _quickMenu.DropDownItems.Add(new ToolStripSeparator());
+        _quickMenu.DropDownItems.Add(Item("Add command...", () => _quickPanel.AddCommand(_quickPanel.SelectedTab)));
         if (_quick.Groups.Count > 0) _quickMenu.DropDownItems.Add(new ToolStripSeparator());
         foreach (var g in _quick.Groups)
         {
-            var sub = new ToolStripMenuItem(g.Name.Replace("&", "&&"));
-            foreach (var c in g.Commands)
-                sub.DropDownItems.Add(new ToolStripMenuItem(c.Name.Replace("&", "&&"), null, (_, _) => ExecuteQuick(c)));
-            if (g.Commands.Count == 0) sub.DropDownItems.Add(new ToolStripMenuItem("(empty)") { Enabled = false });
-            _quickMenu.DropDownItems.Add(sub);
+            var groupItem = new ToolStripMenuItem(g.Name.Replace("&", "&&"));
+            foreach (var t in g.Tabs)
+            {
+                var tabItem = new ToolStripMenuItem(t.Name.Replace("&", "&&"));
+                foreach (var c in t.Commands)
+                    tabItem.DropDownItems.Add(new ToolStripMenuItem(c.Name.Replace("&", "&&"), null, (_, _) => ExecuteQuick(c)));
+                if (t.Commands.Count == 0) tabItem.DropDownItems.Add(new ToolStripMenuItem("(empty)") { Enabled = false });
+                groupItem.DropDownItems.Add(tabItem);
+            }
+            if (g.Tabs.Count == 0) groupItem.DropDownItems.Add(new ToolStripMenuItem("(empty)") { Enabled = false });
+            _quickMenu.DropDownItems.Add(groupItem);
         }
     }
 
@@ -344,12 +355,17 @@ public sealed class MainForm : Form, IMacroHost
         else SetQuickMode(_settings.QuickLastMode == QuickMode.Hidden ? QuickMode.Docked : _settings.QuickLastMode);
     }
 
-    /// <summary>Shows the quick command buttons docked under the terminal, in their own window, or hides them.</summary>
+    /// <summary>Where "Dock in main window" puts the buttons back: above or below the terminal, as last used.</summary>
+    QuickMode LastDock => _settings.QuickLastDock == QuickMode.DockedTop ? QuickMode.DockedTop : QuickMode.Docked;
+
+    /// <summary>Shows the quick command buttons under or above the terminal, in their own window, or hides them.</summary>
     void SetQuickMode(QuickMode mode)
     {
         bool keepSize = WindowState == FormWindowState.Normal;
+        bool docked = mode is QuickMode.Docked or QuickMode.DockedTop;
+        var side = mode == QuickMode.DockedTop ? DockStyle.Top : DockStyle.Bottom;
         SuspendLayout();
-        if (mode != QuickMode.Docked && Controls.Contains(_quickPanel))
+        if (Controls.Contains(_quickPanel) && (!docked || _quickPanel.Dock != side))
         {
             int h = _quickPanel.Height + _quickSplitter.Height;
             Controls.Remove(_quickPanel);
@@ -358,15 +374,16 @@ public sealed class MainForm : Form, IMacroHost
         }
         if (mode != QuickMode.Floating) _quickForm?.Hide();
 
-        if (mode == QuickMode.Docked && !Controls.Contains(_quickPanel))
+        if (docked && !Controls.Contains(_quickPanel))
         {
             _quickForm?.Controls.Remove(_quickPanel);
-            _quickPanel.Dock = DockStyle.Bottom;
+            _quickPanel.Dock = side;
+            _quickSplitter.Dock = side;
             _quickPanel.Height = Math.Clamp(_settings.QuickDockHeight, 60, 600);
             Controls.Add(_quickSplitter);
             Controls.Add(_quickPanel);
             // WinForms docks the highest child index first (outermost): status bar and menu at the edges,
-            // then quick panel and splitter, and the terminal fills what is left.
+            // then quick panel and splitter (under the menu or above the status bar), and the terminal fills what is left.
             Controls.SetChildIndex(_view, 0);
             Controls.SetChildIndex(_quickSplitter, 1);
             Controls.SetChildIndex(_quickPanel, 2);
@@ -394,8 +411,10 @@ public sealed class MainForm : Form, IMacroHost
 
         _settings.QuickMode = mode;
         if (mode != QuickMode.Hidden) _settings.QuickLastMode = mode;
-        _quickPanel.DockButton.Text = mode == QuickMode.Docked ? "Separate window" : "Dock in main window";
-        _quickPanel.DockButton.ToolTipText = mode == QuickMode.Docked ? "Move the buttons to their own window" : "Put the buttons under the terminal";
+        if (docked) _settings.QuickLastDock = mode;
+        _quickPanel.DockButton.Text = docked ? "Separate window" : "Dock in main window";
+        _quickPanel.DockButton.ToolTipText = docked ? "Move the buttons to their own window"
+            : LastDock == QuickMode.DockedTop ? "Put the buttons above the terminal" : "Put the buttons under the terminal";
         _quickPanel.OnTopButton.Visible = mode == QuickMode.Floating;
         if (mode != QuickMode.Floating) _view.Focus();
     }
@@ -423,9 +442,9 @@ public sealed class MainForm : Form, IMacroHost
 
     void RunQuickIndex(int index)
     {
-        int g = _quickPanel.SelectedGroup;
-        if (g < 0 || g >= _quick.Groups.Count) return;
-        var cmds = _quick.Groups[g].Commands;
+        int g = _quickPanel.SelectedGroup, t = _quickPanel.SelectedTab;
+        if (g < 0 || g >= _quick.Groups.Count || t < 0 || t >= _quick.Groups[g].Tabs.Count) return;
+        var cmds = _quick.Groups[g].Tabs[t].Commands;
         if (index < cmds.Count) ExecuteQuick(cmds[index]);
     }
 
@@ -608,12 +627,34 @@ public sealed class MainForm : Form, IMacroHost
     {
         using var dlg = new ConnectionDialog(_settings, SaveSettings);
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
-        await ConnectAsync(dlg.Result, dlg.Session);
+        await OpenConnectionAsync(dlg.Result, dlg.Session);
+    }
+
+    /// <summary>Connects here, or, when already connected, asks whether to use a new window so the current connection stays.</summary>
+    async Task OpenConnectionAsync(ConnectionParams p, SavedSession? session)
+    {
+        if (_conn != null && _connParams != null)
+        {
+            var current = _connSession?.Name ?? _connParams.ToString();
+            var target = session?.Name ?? p.ToString();
+            var answer = MessageBox.Show(this,
+                $"You are connected to {current}.\n\n" +
+                $"Yes = open {target} in a new window (keeps {current})\n" +
+                $"No = close {current} and connect to {target} here",
+                "NXTerm: New connection", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+            if (answer == DialogResult.Cancel) return;
+            if (answer == DialogResult.Yes)
+            {
+                OpenInNewWindow(p, session);
+                return;
+            }
+        }
+        await ConnectAsync(p, session);
     }
 
     public async Task<bool> ConnectAsync(ConnectionParams p, SavedSession? session = null)
     {
-        Disconnect(quiet: true);
+        // Ask for missing login details first, so cancelling keeps the current connection.
         if (p.Type == ConnectionType.Ssh)
         {
             if (string.IsNullOrEmpty(p.User))
@@ -629,6 +670,17 @@ public sealed class MainForm : Form, IMacroHost
                 p.Password = pw;
             }
         }
+
+        if (_conn != null)
+        {
+            Disconnect();
+        }
+        // Whatever the previous connection left on (full-screen program, colours, mouse mode) must not
+        // carry over into the new one. The text stays on screen.
+        _view.Term.ResetModes();
+        if (_view.Term.CursorX > 0) _view.Feed("\r\n");
+        _view.Invalidate();
+        lock (_rxLock) _rxPending.Clear();  // bytes still queued from the previous connection
 
         IConnection c = p.Type switch
         {
@@ -703,6 +755,7 @@ public sealed class MainForm : Form, IMacroHost
 
     void OnDataBackground(IConnection c, byte[] buf, int n)
     {
+        if (c != _conn) return;  // late data from a connection that was already replaced
         var x = _xfer;
         if (x != null)
         {
@@ -778,9 +831,17 @@ public sealed class MainForm : Form, IMacroHost
 
     void DuplicateSession()
     {
-        var args = _conn == null || _connParams == null ? ""
-            : _connSession != null ? $"\"/S={_connSession.Name}\""
-            : _connParams.ToCommandLine();
+        if (_conn == null || _connParams == null) OpenInNewWindow(null, null);
+        else OpenInNewWindow(_connParams, _connSession);
+    }
+
+    /// <summary>Starts another NXTerm window, connected to the given session or connection (it asks for a password itself).</summary>
+    void OpenInNewWindow(ConnectionParams? p, SavedSession? session)
+    {
+        SaveSettings();  // the new window reads the sessions from the settings file
+        var args = p == null ? ""
+            : session != null ? $"\"/S={session.Name}\""
+            : p.ToCommandLine();
         try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, args) { UseShellExecute = false }); }
         catch (Exception ex) { Error("Cannot start a new window", ex); }
     }
@@ -1107,7 +1168,7 @@ public sealed class MainForm : Form, IMacroHost
         "  Alt+C  Copy                    Alt+V  Paste\n" +
         "  Alt+R  Paste + Enter           Alt+B  Send break\n" +
         "  Alt+M  Run macro               Alt+D  Duplicate session\n" +
-        "  Alt+K  Quick commands window   Alt+1..9  Quick command 1-9 of the current tab\n" +
+        "  Alt+K  Show/hide quick commands   Alt+1..9  Quick command 1-9 of the current tab\n" +
         "  Ctrl+Shift+C / Ctrl+Insert     Copy\n" +
         "  Ctrl+Shift+V / Shift+Insert    Paste\n" +
         "  Shift+PageUp / PageDown        Scroll back\n\n" +
@@ -1274,7 +1335,8 @@ public sealed class MainForm : Form, IMacroHost
             _settings.QuickWindowBounds = [b.X, b.Y, b.Width, b.Height];
         }
         if (Controls.Contains(_quickPanel)) _settings.QuickDockHeight = _quickPanel.Height;
-        _settings.QuickGroup = Math.Max(0, _quickPanel.SelectedGroup);
+        _settings.QuickSet = Math.Max(0, _quickPanel.SelectedGroup);
+        _settings.QuickGroup = Math.Max(0, _quickPanel.SelectedTab);
         SaveSettings();
         base.OnFormClosing(e);
     }

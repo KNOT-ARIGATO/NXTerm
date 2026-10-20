@@ -531,24 +531,55 @@ Test("quick command: lines, Enter and escapes", () =>
     Eq(@"printf 'a\n'", new QuickCommand { Text = @"printf 'a\n'", AppendEnter = false }.Expand("\r")[0]);
 });
 
-Test("quick command set: save and load keeps groups and Thai text", () =>
+Test("quick command set: save and load keeps groups, tabs and Thai text", () =>
 {
     var path = Path.GetTempFileName();
     var set = QuickCommandSet.CreateSamples();
-    set.Groups[0].Commands.Add(new QuickCommand { Name = "ทดสอบ", Text = "echo สวัสดี", Confirm = true, Color = "#FF0000" });
+    set.Groups[0].Tabs[0].Commands.Add(new QuickCommand { Name = "ทดสอบ", Text = "echo สวัสดี", Confirm = true, Color = "#FF0000" });
+    set.Groups.Add(new QuickCommandGroup { Name = "BFC2535", Tabs = [new QuickCommandTab { Name = "WiFi" }, new QuickCommandTab { Name = "MFG" }] });
     set.Save(path);
-    Eq(true, File.ReadAllText(path).Contains("สวัสดี"));
+    var json = File.ReadAllText(path);
+    Eq(true, json.Contains("สวัสดี"));
+    Eq(false, json.Contains("\"Commands\": null"));
     var loaded = QuickCommandSet.Load(path);
-    Eq(set.Groups.Count, loaded.Groups.Count);
-    var last = loaded.Groups[0].Commands[^1];
+    Eq(2, loaded.Groups.Count);
+    Eq("WiFi,MFG", string.Join(",", loaded.Groups[1].Tabs.Select(t => t.Name)));
+    var last = loaded.Groups[0].Tabs[0].Commands[^1];
     Eq(("ทดสอบ", "echo สวัสดี", true, "#FF0000"), (last.Name, last.Text, last.Confirm, last.Color));
-    Eq(QuickCommandKind.Macro, loaded.Groups[^1].Commands[0].Kind);
+    Eq(QuickCommandKind.Macro, loaded.Groups[0].Tabs[^1].Commands[0].Kind);
     File.Delete(path);
+});
+
+Test("quick command set: a file from before groups had tabs keeps every button", () =>
+{
+    // 1.4 and earlier: each "group" was one tab of commands.
+    var old = QuickCommandSet.Parse("""
+        { "Groups": [
+          { "Name": "BFC2535 / BFC2540", "Commands": [ { "Name": "GET_DEVICE", "Text": "mfg get_mfg_device" }, { "Name": "Get SN", "Text": "mfg get_pcba_sn", "Color": "#FFFF80" } ] },
+          { "Name": "Linux", "Commands": [ { "Name": "ls", "Text": "ls -la" } ] },
+          { "Name": "Empty", "Commands": [] } ] }
+        """);
+    Eq(1, old.Groups.Count);
+    Eq(QuickCommandSet.DefaultGroupName, old.Groups[0].Name);
+    Eq("BFC2535 / BFC2540,Linux,Empty", string.Join(",", old.Groups[0].Tabs.Select(t => t.Name)));
+    Eq("GET_DEVICE,Get SN", string.Join(",", old.Groups[0].Tabs[0].Commands.Select(c => c.Name)));
+    Eq("#FFFF80", old.Groups[0].Tabs[0].Commands[1].Color);
+    Eq(null, old.Groups[0].Commands);
+});
+
+Test("quick command set: a group or tab chosen by name is found, or created", () =>
+{
+    var set = new QuickCommandSet { Groups = [new QuickCommandGroup { Name = "BFC2535", Tabs = [new QuickCommandTab { Name = "WiFi" }] }] };
+    Eq((0, 0), set.TabIndex("bfc2535", "wifi"));             // existing, any letter case
+    Eq((0, 1), set.TabIndex("BFC2535", "MFG"));              // new tab in an existing group
+    Eq((1, 0), set.TabIndex("Linux", "System"));             // new group with its first tab
+    Eq("BFC2535:WiFi,MFG|Linux:System", string.Join("|", set.Groups.Select(g => g.Name + ":" + string.Join(",", g.Tabs.Select(t => t.Name)))));
+    Eq(1, set.GroupIndex("LINUX"));
 });
 
 Test("quick command samples: macros compile", () =>
 {
-    foreach (var c in QuickCommandSet.CreateSamples().Groups.SelectMany(g => g.Commands).Where(c => c.Kind == QuickCommandKind.Macro))
+    foreach (var c in QuickCommandSet.CreateSamples().Groups.SelectMany(g => g.Tabs).SelectMany(t => t.Commands).Where(c => c.Kind == QuickCommandKind.Macro))
         _ = new MacroRunner(c.Text.Replace("\r\n", "\n").Split('\n'), new FakeHost());
 });
 
@@ -804,6 +835,13 @@ Test("rtsp: a whole picture packed as one NAL unit (Ameba cameras) is shown", ()
         "m=audio 0 RTP/AVP 97\r\na=rtpmap:97 mpeg4-generic/16000/1\r\na=control:streamid=1\r\n");
     Eq("streamid=0", track);
     Eq("streamid=1", string.Join(",", others));
+});
+
+Test("rtsp: IP and profile boxes split and rebuild the address", () =>
+{
+    Eq(("192.168.43.1", "profile1"), RtspViewerForm.SplitAddress("rtsp://192.168.43.1/profile1"));
+    Eq(("admin:p/w@10.0.0.5:8554", "live/ch1"), RtspViewerForm.SplitAddress("rtsp://admin:p/w@10.0.0.5:8554/live/ch1"));
+    Eq(("192.168.1.10", ""), RtspViewerForm.SplitAddress("192.168.1.10"));
 });
 
 Test("rtsp: wrong or missing password is reported, not retried", () =>

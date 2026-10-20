@@ -85,6 +85,7 @@ public sealed class ConnectionDialog : DialogBase
         var buttons = new FlowLayoutPanel { AutoSize = true, MaximumSize = new Size(310, 0), Margin = Padding.Empty };
         buttons.Controls.AddRange(
         [
+            SmallButton("New", NewSession),
             SmallButton("Save...", SaveSession),
             SmallButton("Rename...", RenameSession),
             SmallButton("Delete", DeleteSession),
@@ -93,7 +94,7 @@ public sealed class ConnectionDialog : DialogBase
         left.Controls.Add(buttons);
         left.Controls.Add(new Label
         {
-            Text = "Fill in the details, then \"Save...\" to keep them.\nDouble-click a session to connect.",
+            Text = "\"New\" starts empty details for another device.\nFill them in, then \"Save...\" to keep them.\nDouble-click a session to connect.",
             AutoSize = true,
             ForeColor = SystemColors.GrayText,
         });
@@ -304,14 +305,31 @@ public sealed class ConnectionDialog : DialogBase
     SavedSession? FindByName(string name) =>
         _settings.Sessions.FirstOrDefault(s => s.Name.Equals(name, StringComparison.CurrentCultureIgnoreCase));
 
+    /// <summary>Forgets the chosen session and clears the details, so a new one can be entered without changing a saved one.</summary>
+    void NewSession()
+    {
+        _filling = true;
+        _list.SelectedItems.Clear();
+        _filling = false;
+        _loaded = null;
+        var blank = new ConnectionParams { Type = _serial.Checked ? ConnectionType.Serial : Service, PortName = _com.Text.Split(':')[0].Trim() };
+        blank.Port = Math.Max(1, ConnectionParams.DefaultPort(blank.Type == ConnectionType.Serial ? ConnectionType.Ssh : blank.Type));
+        LoadParams(blank, "");
+        _remember.Checked = false;
+        (_serial.Checked ? (Control)_com : _host).Focus();
+    }
+
     void SaveSession()
     {
         var p = BuildParams();
         if (p == null) return;
-        var name = InputDialog.Show(this, "Save session", "Session name:", _loaded?.Name ?? SavedSession.SuggestName(p))?.Trim();
+        // Suggest the chosen session's name only when its details are unchanged; edited details are most
+        // likely a new device, and reusing the name would silently overwrite the old session.
+        bool unchanged = _loaded != null && SavedSession.SameSettings(p, _loaded.Params);
+        var name = InputDialog.Show(this, "Save session", "Session name:", unchanged ? _loaded!.Name : SavedSession.SuggestName(p))?.Trim();
         if (string.IsNullOrEmpty(name)) return;
         var existing = FindByName(name);
-        if (existing != null && existing != _loaded &&
+        if (existing != null && !(existing == _loaded && unchanged) &&
             MessageBox.Show(this, $"A session named \"{name}\" already exists. Replace it?", Text,
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;

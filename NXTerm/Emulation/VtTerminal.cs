@@ -886,6 +886,31 @@ public sealed class VtTerminal
         _state = State.Ground;
     }
 
+    /// <summary>
+    /// Puts back the modes a previous connection may have left behind (full-screen program, mouse tracking,
+    /// scroll region, colours, character set) without clearing the text on screen. Used before a new connection.
+    /// </summary>
+    public void ResetModes()
+    {
+        SoftReset();
+        if (AltScreen)
+        {
+            // Back to the normal screen, with the cursor under its last line of text.
+            SwitchScreen(false, false);
+            int last = -1;
+            for (int y = 0; y < Rows; y++)
+                if (_lines[y].Cells.Any(c => c.Ch is not (' ' or '\0'))) last = y;
+            CursorX = 0;
+            CursorY = Math.Min(last + 1, Rows - 1);
+        }
+        BracketedPaste = ReverseVideo = NewLineMode = false;
+        MouseTracking = 0;
+        MouseSgr = false;
+        CursorShapeOverride = null;
+        _wrapPending = false;
+        _state = State.Ground;
+    }
+
     void SoftReset()
     {
         InsertMode = OriginMode = AppCursorKeys = AppKeypad = false;

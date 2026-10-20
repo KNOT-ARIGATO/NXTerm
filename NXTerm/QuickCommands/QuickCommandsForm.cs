@@ -3,18 +3,24 @@ using NXTerm.Dialogs;
 
 namespace NXTerm.QuickCommands;
 
-public enum QuickMode { Hidden, Docked, Floating }
+/// <summary>Where the quick command buttons are shown. Values are stored by name in the settings file.</summary>
+public enum QuickMode { Hidden, Docked, Floating, DockedTop }
 
-/// <summary>Tabs of command buttons. Hosted either at the bottom of the main window or in a <see cref="QuickCommandsForm"/>.</summary>
+/// <summary>
+/// Quick command buttons in three levels: a group (chosen in the toolbar), its tabs, and the command buttons.
+/// Hosted under or above the terminal in the main window, or in a <see cref="QuickCommandsForm"/>.
+/// </summary>
 public sealed class QuickCommandsPanel : UserControl
 {
     readonly QuickCommandSet _set;
     readonly Action<QuickCommand> _execute;
     readonly TabControl _tabs = new() { Dock = DockStyle.Fill, Multiline = true };
     readonly ToolStrip _tools = new() { GripStyle = ToolStripGripStyle.Hidden, Padding = new Padding(2, 0, 2, 0) };
+    readonly ToolStripComboBox _groupBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, AutoSize = false, Width = 170, ToolTipText = "Group of tabs. Right click to rename, move or delete it." };
     readonly ToolTip _tip = new() { InitialDelay = 400, AutoPopDelay = 15000 };
-    readonly ContextMenuStrip _tabMenu = new(), _cmdMenu = new();
-    int _menuGroup = -1;
+    readonly ContextMenuStrip _groupMenu = new(), _tabMenu = new(), _cmdMenu = new();
+    int _group, _menuTab = -1;
+    bool _filling;
 
     public readonly ToolStripButton DockButton = new() { Alignment = ToolStripItemAlignment.Right };
     public readonly ToolStripButton CloseButton = new("✕") { Alignment = ToolStripItemAlignment.Right, ToolTipText = "Hide quick commands (Alt+K)" };
@@ -23,18 +29,27 @@ public sealed class QuickCommandsPanel : UserControl
     /// <summary>Raised after any change was saved, so the main window can refresh its menu.</summary>
     public event Action? CommandsChanged;
 
-    public int SelectedGroup => _tabs.SelectedIndex;
+    /// <summary>Index of the group shown, or -1 when there is none.</summary>
+    public int SelectedGroup => _set.Groups.Count == 0 ? -1 : _group;
 
-    public QuickCommandsPanel(QuickCommandSet set, int selectedGroup, Action<QuickCommand> execute)
+    /// <summary>Index of the tab shown in the current group, or -1 when there is none.</summary>
+    public int SelectedTab => Tabs.Count == 0 ? -1 : _tabs.SelectedIndex;
+
+    QuickCommandGroup? Group => _group >= 0 && _group < _set.Groups.Count ? _set.Groups[_group] : null;
+    List<QuickCommandTab> Tabs => Group?.Tabs ?? [];
+
+    public QuickCommandsPanel(QuickCommandSet set, int selectedGroup, int selectedTab, Action<QuickCommand> execute)
     {
         _set = set;
         _execute = execute;
         Font = SystemFonts.MessageBoxFont;
 
-        _tools.Items.Add(new ToolStripLabel("Quick commands") { Font = new Font(Font, FontStyle.Bold) });
+        _tools.Items.Add(new ToolStripLabel("Group:") { Font = new Font(Font, FontStyle.Bold) });
+        _tools.Items.Add(_groupBox);
         _tools.Items.Add(new ToolStripSeparator());
-        _tools.Items.Add(new ToolStripButton("+ Group", null, (_, _) => AddGroup()) { ToolTipText = "Add a new tab" });
-        _tools.Items.Add(new ToolStripButton("+ Command", null, (_, _) => AddCommand(SelectedGroup)) { ToolTipText = "Add a command to the current tab" });
+        _tools.Items.Add(new ToolStripButton("+ Group", null, (_, _) => AddGroup()) { ToolTipText = "Add a new group of tabs" });
+        _tools.Items.Add(new ToolStripButton("+ Tab", null, (_, _) => AddTab()) { ToolTipText = "Add a new tab to this group" });
+        _tools.Items.Add(new ToolStripButton("+ Command", null, (_, _) => AddCommand(SelectedTab)) { ToolTipText = "Add a command to the current tab" });
         _tools.Items.Add(new ToolStripSeparator());
         _tools.Items.Add(new ToolStripButton("Import...", null, (_, _) => Import()));
         _tools.Items.Add(new ToolStripButton("Export...", null, (_, _) => Export()));
@@ -42,40 +57,58 @@ public sealed class QuickCommandsPanel : UserControl
         _tools.Items.Add(DockButton);
         _tools.Items.Add(OnTopButton);
 
+        _groupBox.SelectedIndexChanged += (_, _) =>
+        {
+            if (_filling || _groupBox.SelectedIndex < 0) return;
+            _group = _groupBox.SelectedIndex;
+            Rebuild(0);
+            CommandsChanged?.Invoke();
+        };
+        _groupMenu.Items.AddRange(
+        [
+            new ToolStripMenuItem("Rename group...", null, (_, _) => RenameGroup()),
+            new ToolStripMenuItem("Move up", null, (_, _) => MoveGroup(-1)),
+            new ToolStripMenuItem("Move down", null, (_, _) => MoveGroup(1)),
+            new ToolStripSeparator(),
+            new ToolStripMenuItem("Delete group", null, (_, _) => DeleteGroup()),
+        ]);
+        _groupBox.ComboBox.ContextMenuStrip = _groupMenu;
+
         _tabMenu.Items.AddRange(
         [
-            new ToolStripMenuItem("+ Command...", null, (_, _) => AddCommand(_menuGroup)),
-            new ToolStripMenuItem("Rename group...", null, (_, _) => RenameGroup(_menuGroup)),
-            new ToolStripMenuItem("Move left", null, (_, _) => MoveGroup(_menuGroup, -1)),
-            new ToolStripMenuItem("Move right", null, (_, _) => MoveGroup(_menuGroup, 1)),
+            new ToolStripMenuItem("+ Command...", null, (_, _) => AddCommand(_menuTab)),
+            new ToolStripMenuItem("Edit tab (name, group)...", null, (_, _) => EditTab(_menuTab)),
+            new ToolStripMenuItem("Move left", null, (_, _) => MoveTab(_menuTab, -1)),
+            new ToolStripMenuItem("Move right", null, (_, _) => MoveTab(_menuTab, 1)),
             new ToolStripSeparator(),
-            new ToolStripMenuItem("Delete group", null, (_, _) => DeleteGroup(_menuGroup)),
+            new ToolStripMenuItem("Delete tab", null, (_, _) => DeleteTab(_menuTab)),
         ]);
         _cmdMenu.Items.AddRange(
         [
-            new ToolStripMenuItem("Send", null, (_, _) => WithCommand((g, i) => _execute(_set.Groups[g].Commands[i]))),
-            new ToolStripMenuItem("Edit...", null, (_, _) => WithCommand(EditCommand)),
+            new ToolStripMenuItem("Send", null, (_, _) => WithCommand((t, i) => _execute(Tabs[t].Commands[i]))),
+            new ToolStripMenuItem("Edit (also move to another group or tab)...", null, (_, _) => WithCommand(EditCommand)),
             new ToolStripMenuItem("Duplicate", null, (_, _) => WithCommand(DuplicateCommand)),
-            new ToolStripMenuItem("Move left", null, (_, _) => WithCommand((g, i) => MoveCommand(g, i, -1))),
-            new ToolStripMenuItem("Move right", null, (_, _) => WithCommand((g, i) => MoveCommand(g, i, 1))),
+            new ToolStripMenuItem("Move left", null, (_, _) => WithCommand((t, i) => MoveCommand(t, i, -1))),
+            new ToolStripMenuItem("Move right", null, (_, _) => WithCommand((t, i) => MoveCommand(t, i, 1))),
             new ToolStripSeparator(),
             new ToolStripMenuItem("Delete", null, (_, _) => WithCommand(DeleteCommand)),
         ]);
         _tabs.MouseUp += (_, e) =>
         {
             if (e.Button != MouseButtons.Right) return;
-            _menuGroup = TabAt(e.Location);
-            if (_menuGroup >= 0) _tabMenu.Show(_tabs, e.Location);
+            _menuTab = TabAt(e.Location);
+            if (_menuTab >= 0) _tabMenu.Show(_tabs, e.Location);
         };
         _tabs.MouseDoubleClick += (_, e) =>
         {
-            int g = TabAt(e.Location);
-            if (g >= 0) RenameGroup(g);
+            int t = TabAt(e.Location);
+            if (t >= 0) EditTab(t);
         };
 
         Controls.Add(_tabs);
         Controls.Add(_tools);
-        Rebuild(selectedGroup);
+        _group = Math.Clamp(selectedGroup, 0, Math.Max(0, _set.Groups.Count - 1));
+        Rebuild(selectedTab);
     }
 
     IWin32Window? Owner => FindForm();
@@ -83,47 +116,66 @@ public sealed class QuickCommandsPanel : UserControl
     int TabAt(Point p)
     {
         for (int i = 0; i < _tabs.TabCount; i++)
-            if (_tabs.GetTabRect(i).Contains(p)) return i < _set.Groups.Count ? i : -1;
+            if (_tabs.GetTabRect(i).Contains(p)) return i < Tabs.Count ? i : -1;
         return -1;
     }
 
     void WithCommand(Action<int, int> action)
     {
-        if (_cmdMenu.SourceControl?.Tag is (int g, int i)) action(g, i);
+        if (_cmdMenu.SourceControl?.Tag is (int t, int i)) action(t, i);
     }
 
     // ------------------------------------------------------------------ layout
 
-    void Rebuild(int select)
+    void FillGroupBox()
     {
+        _filling = true;
+        _groupBox.Items.Clear();
+        foreach (var g in _set.Groups) _groupBox.Items.Add(g.Name);
+        if (_set.Groups.Count > 0) _groupBox.SelectedIndex = Math.Clamp(_group, 0, _set.Groups.Count - 1);
+        _filling = false;
+    }
+
+    void Rebuild(int selectTab)
+    {
+        if (_set.Groups.Count > 0) _group = Math.Clamp(_group, 0, _set.Groups.Count - 1);
+        FillGroupBox();
         _tabs.SuspendLayout();
         foreach (TabPage p in _tabs.TabPages) p.Dispose();
         _tabs.TabPages.Clear();
-        for (int g = 0; g < _set.Groups.Count; g++)
+        var tabs = Tabs;
+        for (int t = 0; t < tabs.Count; t++)
         {
-            var group = _set.Groups[g];
-            var page = new TabPage(group.Name) { UseVisualStyleBackColor = true, Padding = new Padding(2) };
+            var tab = tabs[t];
+            var page = new TabPage(tab.Name) { UseVisualStyleBackColor = true, Padding = new Padding(2) };
             var flow = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true };
-            for (int i = 0; i < group.Commands.Count; i++) flow.Controls.Add(MakeButton(g, i, group.Commands[i]));
-            int gi = g;
+            for (int i = 0; i < tab.Commands.Count; i++) flow.Controls.Add(MakeButton(t, i, tab.Commands[i]));
+            int ti = t;
             var add = new Button { Text = "+", Size = new Size(34, 30), Margin = new Padding(3) };
-            add.Click += (_, _) => AddCommand(gi);
-            _tip.SetToolTip(add, "Add a command to this group");
+            add.Click += (_, _) => AddCommand(ti);
+            _tip.SetToolTip(add, "Add a command to this tab");
             flow.Controls.Add(add);
             page.Controls.Add(flow);
             _tabs.TabPages.Add(page);
         }
-        if (_set.Groups.Count == 0)
+        if (tabs.Count == 0)
         {
             var page = new TabPage("(empty)") { UseVisualStyleBackColor = true };
-            page.Controls.Add(new Label { Text = "Click \"+ Group\" to create your first group of commands.", AutoSize = true, Location = new Point(12, 12) });
+            page.Controls.Add(new Label
+            {
+                Text = _set.Groups.Count == 0
+                    ? "Click \"+ Group\" to create your first group, then \"+ Tab\" and \"+ Command\"."
+                    : "Click \"+ Tab\" to add the first tab to this group.",
+                AutoSize = true,
+                Location = new Point(12, 12),
+            });
             _tabs.TabPages.Add(page);
         }
-        _tabs.SelectedIndex = Math.Clamp(select, 0, _tabs.TabCount - 1);
+        _tabs.SelectedIndex = Math.Clamp(selectTab, 0, _tabs.TabCount - 1);
         _tabs.ResumeLayout();
     }
 
-    Button MakeButton(int g, int i, QuickCommand c)
+    Button MakeButton(int t, int i, QuickCommand c)
     {
         var b = new Button
         {
@@ -134,7 +186,7 @@ public sealed class QuickCommandsPanel : UserControl
             MinimumSize = new Size(72, 30),
             Margin = new Padding(3),
             Padding = new Padding(6, 0, 6, 0),
-            Tag = (g, i),
+            Tag = (t, i),
             ContextMenuStrip = _cmdMenu,
         };
         if (c.Color.Length > 0)
@@ -153,104 +205,163 @@ public sealed class QuickCommandsPanel : UserControl
 
     // ------------------------------------------------------------------ editing
 
-    void Changed(int select)
+    void Changed(int selectTab)
     {
         try { _set.Save(QuickCommandSet.DefaultPath); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             MessageBox.Show(Owner, "Cannot save quick commands:\n" + ex.Message, "NXTerm", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        Rebuild(select);
+        Rebuild(selectTab);
         CommandsChanged?.Invoke();
     }
 
-    IList<string> GroupNames => _set.Groups.Select(g => g.Name).ToList();
-
     public void AddGroup()
     {
-        var name = InputDialog.Show(Owner, "New group", "Group (tab) name:", $"Group {_set.Groups.Count + 1}");
+        var name = InputDialog.Show(Owner, "New group", "Group name (for example a product or device):", $"Group {_set.Groups.Count + 1}");
         if (string.IsNullOrWhiteSpace(name)) return;
-        _set.Groups.Add(new QuickCommandGroup { Name = name.Trim() });
-        Changed(_set.Groups.Count - 1);
+        _set.Groups.Add(new QuickCommandGroup { Name = name.Trim(), Tabs = [new QuickCommandTab { Name = "General" }] });
+        _group = _set.Groups.Count - 1;
+        Changed(0);
     }
 
-    void RenameGroup(int g)
+    void RenameGroup()
     {
-        if (g < 0 || g >= _set.Groups.Count) return;
-        var name = InputDialog.Show(Owner, "Rename group", "Group (tab) name:", _set.Groups[g].Name);
+        if (Group is not { } g) return;
+        var name = InputDialog.Show(Owner, "Rename group", "Group name:", g.Name);
         if (string.IsNullOrWhiteSpace(name)) return;
-        _set.Groups[g].Name = name.Trim();
-        Changed(g);
+        g.Name = name.Trim();
+        Changed(SelectedTab);
     }
 
-    void MoveGroup(int g, int delta)
+    void MoveGroup(int delta)
     {
-        int to = g + delta;
-        if (g < 0 || to < 0 || to >= _set.Groups.Count) return;
-        (_set.Groups[g], _set.Groups[to]) = (_set.Groups[to], _set.Groups[g]);
+        int to = _group + delta;
+        if (Group == null || to < 0 || to >= _set.Groups.Count) return;
+        (_set.Groups[_group], _set.Groups[to]) = (_set.Groups[to], _set.Groups[_group]);
+        _group = to;
+        Changed(SelectedTab);
+    }
+
+    void DeleteGroup()
+    {
+        if (Group is not { } g) return;
+        int count = g.Tabs.Sum(t => t.Commands.Count);
+        if (MessageBox.Show(Owner, $"Delete group \"{g.Name}\" with its {g.Tabs.Count} tab(s) and {count} command(s)?", "NXTerm",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+            return;
+        _set.Groups.RemoveAt(_group);
+        _group = Math.Max(0, _group - 1);
+        Changed(0);
+    }
+
+    public void AddTab()
+    {
+        if (_set.Groups.Count == 0)
+        {
+            AddGroup();
+            return;
+        }
+        var name = InputDialog.Show(Owner, "New tab", "Tab name:", $"Tab {Tabs.Count + 1}");
+        if (string.IsNullOrWhiteSpace(name)) return;
+        Group!.Tabs.Add(new QuickCommandTab { Name = name.Trim() });
+        Changed(Tabs.Count - 1);
+    }
+
+    /// <summary>Renames a tab, or moves it with all its buttons to another (or a new) group.</summary>
+    void EditTab(int t)
+    {
+        if (t < 0 || t >= Tabs.Count) return;
+        var tab = Tabs[t];
+        using var dlg = new QuickTabDialog(_set, tab.Name, _group);
+        if (dlg.ShowDialog(Owner) != DialogResult.OK) return;
+        tab.Name = dlg.TabName;
+        int target = _set.GroupIndex(dlg.GroupName);
+        if (target == _group)
+        {
+            Changed(t);
+            return;
+        }
+        Group!.Tabs.Remove(tab);
+        _set.Groups[target].Tabs.Add(tab);
+        _group = target;  // show the tab where it went
+        Changed(_set.Groups[target].Tabs.Count - 1);
+    }
+
+    void MoveTab(int t, int delta)
+    {
+        var tabs = Tabs;
+        int to = t + delta;
+        if (t < 0 || to < 0 || to >= tabs.Count) return;
+        (tabs[t], tabs[to]) = (tabs[to], tabs[t]);
         Changed(to);
     }
 
-    void DeleteGroup(int g)
+    void DeleteTab(int t)
     {
-        if (g < 0 || g >= _set.Groups.Count) return;
-        var group = _set.Groups[g];
-        if (group.Commands.Count > 0 &&
-            MessageBox.Show(Owner, $"Delete group \"{group.Name}\" and its {group.Commands.Count} command(s)?", "NXTerm",
+        if (t < 0 || t >= Tabs.Count) return;
+        var tab = Tabs[t];
+        if (tab.Commands.Count > 0 &&
+            MessageBox.Show(Owner, $"Delete tab \"{tab.Name}\" and its {tab.Commands.Count} command(s)?", "NXTerm",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
-        _set.Groups.RemoveAt(g);
-        Changed(g - 1);
+        Tabs.RemoveAt(t);
+        Changed(t - 1);
     }
 
-    public void AddCommand(int g)
+    public void AddCommand(int t)
     {
-        if (_set.Groups.Count == 0) _set.Groups.Add(new QuickCommandGroup { Name = "General" });
-        g = Math.Clamp(g, 0, _set.Groups.Count - 1);
-        using var dlg = new QuickCommandDialog(new QuickCommand(), GroupNames, g, isNew: true);
+        using var dlg = new QuickCommandDialog(new QuickCommand(), _set, SelectedGroup, Math.Max(0, t), isNew: true);
         if (dlg.ShowDialog(Owner) != DialogResult.OK) return;
-        _set.Groups[dlg.GroupIndex].Commands.Add(dlg.Result);
-        Changed(dlg.GroupIndex);
+        var (g2, t2) = _set.TabIndex(dlg.TargetGroup, dlg.TargetTab);
+        _set.Groups[g2].Tabs[t2].Commands.Add(dlg.Result);
+        _group = g2;
+        Changed(t2);
     }
 
-    void EditCommand(int g, int i)
+    /// <summary>Edits a button; choosing another group or tab in the dialog moves it there (to the end).</summary>
+    void EditCommand(int t, int i)
     {
-        using var dlg = new QuickCommandDialog(_set.Groups[g].Commands[i].Clone(), GroupNames, g, isNew: false);
+        var tab = Tabs[t];
+        using var dlg = new QuickCommandDialog(tab.Commands[i].Clone(), _set, _group, t, isNew: false);
         if (dlg.ShowDialog(Owner) != DialogResult.OK) return;
-        if (dlg.GroupIndex == g) _set.Groups[g].Commands[i] = dlg.Result;
+        var (g2, t2) = _set.TabIndex(dlg.TargetGroup, dlg.TargetTab);
+        var target = _set.Groups[g2].Tabs[t2];
+        if (target == tab) tab.Commands[i] = dlg.Result;
         else
         {
-            _set.Groups[g].Commands.RemoveAt(i);
-            _set.Groups[dlg.GroupIndex].Commands.Add(dlg.Result);
+            tab.Commands.RemoveAt(i);
+            target.Commands.Add(dlg.Result);
         }
-        Changed(dlg.GroupIndex);
+        _group = g2;  // show the button where it went
+        Changed(t2);
     }
 
-    void DuplicateCommand(int g, int i)
+    void DuplicateCommand(int t, int i)
     {
-        var copy = _set.Groups[g].Commands[i].Clone();
+        var copy = Tabs[t].Commands[i].Clone();
         copy.Name += " (copy)";
-        _set.Groups[g].Commands.Insert(i + 1, copy);
-        Changed(g);
+        Tabs[t].Commands.Insert(i + 1, copy);
+        Changed(t);
     }
 
-    void MoveCommand(int g, int i, int delta)
+    void MoveCommand(int t, int i, int delta)
     {
-        var list = _set.Groups[g].Commands;
+        var list = Tabs[t].Commands;
         int to = i + delta;
         if (to < 0 || to >= list.Count) return;
         (list[i], list[to]) = (list[to], list[i]);
-        Changed(g);
+        Changed(t);
     }
 
-    void DeleteCommand(int g, int i)
+    void DeleteCommand(int t, int i)
     {
-        var c = _set.Groups[g].Commands[i];
+        var c = Tabs[t].Commands[i];
         if (MessageBox.Show(Owner, $"Delete \"{c.Name}\"?", "NXTerm", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
                 MessageBoxDefaultButton.Button2) != DialogResult.Yes)
             return;
-        _set.Groups[g].Commands.RemoveAt(i);
-        Changed(g);
+        Tabs[t].Commands.RemoveAt(i);
+        Changed(t);
     }
 
     void Import()
@@ -271,7 +382,8 @@ public sealed class QuickCommandsPanel : UserControl
         if (answer == DialogResult.No) _set.Groups.Clear();
         int first = _set.Groups.Count;
         _set.Groups.AddRange(loaded.Groups);
-        Changed(first);
+        _group = Math.Min(first, Math.Max(0, _set.Groups.Count - 1));
+        Changed(0);
     }
 
     void Export()

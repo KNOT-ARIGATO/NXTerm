@@ -47,7 +47,9 @@ public sealed class AppSettings
     public int QuickDockHeight = 104;
     public int[]? QuickWindowBounds;  // x, y, width, height of the floating window
     public bool QuickWindowOnTop;
-    public int QuickGroup;
+    public QuickMode QuickLastDock = QuickMode.Docked;  // below or above the terminal, for "Dock in main window"
+    public int QuickSet;    // the group shown
+    public int QuickGroup;  // the tab shown in that group (named from when groups were tabs)
 
     // Extra tools: ticked in Setup > Extra tools to show their button on the menu bar.
     public bool ShowRtspTool;
